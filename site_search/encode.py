@@ -7,7 +7,7 @@ import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, PayloadSchemaType
 
-from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR
+from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY
 from site_search.neural_searcher import NeuralSearcher
 
 BATCH_SIZE = 256
@@ -28,7 +28,7 @@ def read_text_records(filename: str) -> Iterable[str]:
 
 
 if __name__ == '__main__':
-    qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, https=True, api_key=QDRANT_API_KEY)
 
     qdrant_client.recreate_collection(collection_name=COLLECTION_NAME,
                                       vector_size=encoder.model.get_sentence_embedding_dimension(),

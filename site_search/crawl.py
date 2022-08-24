@@ -147,11 +147,11 @@ class Crawler:
 
 
 if __name__ == '__main__':
-    page_url = 'https://qdrant.tech/'
-
+    page_url = "https://qdrant.tech/"
+    site_map_url = page_url + "sitemap.xml"
     crawler = Crawler(page_url)
 
-    pages = crawler.download_sitemap("https://qdrant.tech/sitemap.xml")
+    pages = crawler.download_sitemap(site_map_url)
 
     with open(os.path.join(DATA_DIR, 'abstracts.jsonl'), 'w') as out:
         page_urls = []
