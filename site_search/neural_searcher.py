@@ -25,7 +25,8 @@ class NeuralSearcher:
     def __init__(self, collection_name: str):
         self.collection_name = collection_name
         self.model = SentenceTransformer('all-MiniLM-L12-v2', device='cpu')
-        self.qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, https=True, api_key=QDRANT_API_KEY)
+        self.qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY,
+                                          prefer_grpc=True)
 
     def search(self, text: str, filter_: dict = None) -> List[dict]:
         vector = self.model.encode(text).tolist()
@@ -35,10 +36,13 @@ class NeuralSearcher:
             query_filter=Filter(**filter_) if filter_ else None,
             limit=5,
             with_payload=True,
-            with_vector=False,
+            with_vectors=False,
         )
         payloads = [{"payload": hit.payload, "score": hit.score} for hit in search_result]
         return payloads
+
+    def text_search(self, text: str, filter_: dict = None) -> List[dict]:
+        raise NotImplementedError()
 
     def encode_iter(self, texts: Iterable[str]) -> Iterable[list]:
         for batch in iter_batch(texts, BATCH_SIZE):
