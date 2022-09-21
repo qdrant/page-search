@@ -41,9 +41,6 @@ class NeuralSearcher:
         payloads = [{"payload": hit.payload, "score": hit.score} for hit in search_result]
         return payloads
 
-    def text_search(self, text: str, filter_: dict = None) -> List[dict]:
-        raise NotImplementedError()
-
     def encode_iter(self, texts: Iterable[str]) -> Iterable[list]:
         for batch in iter_batch(texts, BATCH_SIZE):
             vectors = self.model.encode(batch).tolist()

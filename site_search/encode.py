@@ -5,7 +5,7 @@ from typing import Iterable
 import numpy as np
 
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams
+from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType
 
 from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY
 from site_search.neural_searcher import NeuralSearcher
@@ -44,8 +44,25 @@ if __name__ == '__main__':
     vectors = encoder.encode_iter(read_text_records(records_path))
     payloads = read_records(records_path)
 
-    index_response = qdrant_client.create_payload_index(collection_name=COLLECTION_NAME, field_name='sections',
-                                                        field_schema=PayloadSchemaType.KEYWORD, wait=True)
+    index_response = qdrant_client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name='sections',
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True
+    )
+
+    text_index_response = qdrant_client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name='text',
+        field_schema=TextIndexParams(
+            type="text",
+            tokenizer=TokenizerType.PREFIX,
+            min_token_len=2,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True
+    )
 
     qdrant_client.upload_collection(
         collection_name=COLLECTION_NAME,
