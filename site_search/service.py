@@ -2,21 +2,27 @@ from fastapi import FastAPI
 
 from site_search.config import COLLECTION_NAME
 from site_search.neural_searcher import NeuralSearcher
+from fastapi.middleware.cors import CORSMiddleware
+
+from site_search.site_searcher import SiteSearcher
 
 app = FastAPI()
 
-neural_searcher = NeuralSearcher(collection_name=COLLECTION_NAME)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+searcher = SiteSearcher(collection_name=COLLECTION_NAME)
 
 
 @app.get("/api/search")
 async def read_item(q: str, section=None):
-    section_filter = {
-        "must": [
-            {"key": "sections", "match": {"value": section}},
-        ]
-    } if section else None
     return {
-        "result": neural_searcher.search(text=q, filter_=section_filter)
+        "result": searcher.search(text=q, section=section)
     }
 
 

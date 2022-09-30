@@ -3,6 +3,7 @@ import re
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter
 
+from site_search.common import limit_text, highlight_search_match
 from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY, COLLECTION_NAME
 
 
@@ -15,34 +16,6 @@ class TextSearcher:
             api_key=QDRANT_API_KEY,
             prefer_grpc=True
         )
-
-    @classmethod
-    def highlight_search_match(cls, text: str, query: str, before="<b>", after="</b>"):
-        """
-        >>> TextSearcher.highlight_search_match("hello world", "world")
-        'hello <b>world</b>'
-
-        >>> TextSearcher.highlight_search_match("hello world", "hello")
-        '<b>hello</b> world'
-
-        >>> TextSearcher.highlight_search_match("hello world", "hell")
-        '<b>hell</b>o world'
-
-        >>> TextSearcher.highlight_search_match("hello world", "foo")
-        'hello world'
-
-        >>> TextSearcher.highlight_search_match("hello world", "ello")
-        'hello world'
-
-
-        :param text: Found string
-        :param query: Search query
-        :param before: Tag before match
-        :param after: Tag after match
-        :return: Highlighted string
-        """
-        # Replace matches only on word boundaries
-        return re.compile(r"\b" + re.escape(query)).sub(before + query + after, text)
 
     def search(self, text, tags=None, section=None, filter_=None):
         scroll_filter = {
@@ -86,7 +59,7 @@ class TextSearcher:
         )
         payloads = [{
             "payload": hit.payload,
-            "highlight": self.highlight_search_match(hit.payload['text'], text),
+            "highlight": highlight_search_match(limit_text(hit.payload['text']), text),
         } for hit in search_result]
         return payloads
 

@@ -123,14 +123,15 @@ class Crawler:
             tag_text = tag.text.strip()
             parent_selector = selector_soup(tag.parent)
 
-            parent_headers = current_headers_per_element.get(parent_selector, None)
-            if parent_headers:
-                parent_headers = [parent_headers]
-            else:
-                parent_headers = []
-
             if tag.name in HEADER_TAGS:
                 current_headers_per_element[parent_selector] = tag.text
+                parent_headers = []
+            else:
+                parent_headers = current_headers_per_element.get(parent_selector, None)
+                if parent_headers:
+                    parent_headers = [parent_headers]
+                else:
+                    parent_headers = []
 
             for line in tag_text.splitlines():
                 if line:

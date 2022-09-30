@@ -16,15 +16,16 @@ class SiteSearcher:
 
     def _neural_search(self, text, section):
         section_filter = self._get_section_filter(section=section)
-        return {
-            "result": self.neural_searcher.search(text=text, filter_=section_filter)
-        }
+        return self.neural_searcher.search(text=text, filter_=section_filter)
 
     def _prefix_search(self, text, section):
-        self.text_searcher.search(text=text, section=section, tags=["h1", "h2", "h3", "h4", "h5", "h6"])
+        return self.text_searcher.search(text=text, section=section, tags=["h1", "h2", "h3", "h4", "h5", "h6"])
 
     def search(self, text, section=None):
         if len(text) > 3:
-            return self._neural_search(text=text, section=section)
+            prefix_results = self._prefix_search(text=text, section=section)
+            if len(prefix_results) < 2:
+                return prefix_results + self._neural_search(text=text, section=section)
+            return prefix_results
         else:
             return self._prefix_search(text=text, section=section)

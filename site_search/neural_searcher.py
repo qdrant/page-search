@@ -4,7 +4,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter
 from sentence_transformers import SentenceTransformer
 
-from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY
+from site_search.common import highlight_search_match, limit_text
+from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY, NEURAL_ENCODER
 
 BATCH_SIZE = 32
 
@@ -24,7 +25,7 @@ class NeuralSearcher:
 
     def __init__(self, collection_name: str):
         self.collection_name = collection_name
-        self.model = SentenceTransformer('all-MiniLM-L12-v2', device='cpu')
+        self.model = SentenceTransformer(NEURAL_ENCODER, device='cpu')
         self.qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY,
                                           prefer_grpc=True)
 
@@ -38,7 +39,11 @@ class NeuralSearcher:
             with_payload=True,
             with_vectors=False,
         )
-        payloads = [{"payload": hit.payload, "score": hit.score} for hit in search_result]
+        payloads = [{
+            "payload": hit.payload,
+            "score": hit.score,
+            "highlight": highlight_search_match(limit_text(hit.payload['text']), text),
+        } for hit in search_result]
         return payloads
 
     def encode_iter(self, texts: Iterable[str]) -> Iterable[list]:
