@@ -5,7 +5,7 @@ from qdrant_client.http.models import Filter
 from sentence_transformers import SentenceTransformer
 
 from site_search.common import highlight_search_match, limit_text
-from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY, NEURAL_ENCODER
+from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY, NEURAL_ENCODER, SEARCH_LIMIT
 
 BATCH_SIZE = 32
 
@@ -35,7 +35,7 @@ class NeuralSearcher:
             collection_name=self.collection_name,
             query_vector=vector,
             query_filter=Filter(**filter_) if filter_ else None,
-            limit=5,
+            limit=SEARCH_LIMIT,
             with_payload=True,
             with_vectors=False,
         )

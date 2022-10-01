@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter
 
 from site_search.common import limit_text, highlight_search_match
-from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY, COLLECTION_NAME
+from site_search.config import QDRANT_HOST, QDRANT_PORT, QDRANT_API_KEY, COLLECTION_NAME, SEARCH_LIMIT
 
 
 class TextSearcher:
@@ -53,7 +53,7 @@ class TextSearcher:
         search_result, _next_page = self.qdrant_client.scroll(
             collection_name=self.collection_name,
             scroll_filter=Filter(**scroll_filter),
-            limit=5,
+            limit=SEARCH_LIMIT,
             with_payload=True,
             with_vectors=False,
         )
