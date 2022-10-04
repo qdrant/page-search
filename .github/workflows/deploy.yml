@@ -43,7 +43,7 @@ jobs:
           docker images;
           docker kill qdrant-site-search || true;
           docker rm qdrant-site-search || true;
-          docker run -d -p 8005:8005 -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} --name qdrant-site-search qdrant/site-search:${{ github.sha }};
+          docker run -d -p 8005:8005 --restart unless-stopped --network=qdrant-net -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} --name qdrant-site-search qdrant/site-search:${{ github.sha }};
         host: ${{ secrets.DEPLOY_HOST }}
         user: ${{ secrets.DEPLOY_USER }}
         key: ${{ secrets.DEPLOY_SSH_KEY }}
