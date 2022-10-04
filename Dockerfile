@@ -27,4 +27,4 @@ RUN python -c 'from sentence_transformers import SentenceTransformer; SentenceTr
 # Creating folders, and files for a project:
 COPY . /code
 
-CMD uvicorn site_search.service:app --host 0.0.0.0 --port 8000 --workers ${WORKERS:-1}
+CMD uvicorn site_search.service:app --host 0.0.0.0 --port 8005 --workers ${WORKERS:-1}
