@@ -3,6 +3,7 @@ import os
 from typing import Iterable
 
 import tqdm
+from blingfire import text_to_sentences
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType
 
@@ -20,10 +21,19 @@ def read_records(filename: str) -> Iterable[dict]:
             yield json.loads(line)
 
 
-def read_text_records(filename: str) -> Iterable[str]:
-    with open(filename, 'r') as f:
-        for line in f:
-            yield json.loads(line)['text']
+def read_sentence_records(filename: str) -> Iterable[dict]:
+    for record in read_records(filename):
+        sentences = text_to_sentences(record['text']).split("\n")
+        for i in range(len(sentences)):
+            yield {
+                **record,
+                'text': " ".join(sentences[i:i + 1]),
+            }
+
+
+def read_text_records(filename: str, reader=read_records) -> Iterable[str]:
+    for record in reader(filename):
+        yield record['text']
 
 
 if __name__ == '__main__':
@@ -39,9 +49,10 @@ if __name__ == '__main__':
     )
 
     records_path = os.path.join(DATA_DIR, 'abstracts.jsonl')
+    records_reader = read_sentence_records
 
-    vectors = encoder.encode_iter(tqdm.tqdm(read_text_records(records_path)))
-    payloads = read_records(records_path)
+    payloads = records_reader(records_path)
+    vectors = encoder.encode_iter(tqdm.tqdm(read_text_records(records_path, reader=records_reader)))
 
     index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,

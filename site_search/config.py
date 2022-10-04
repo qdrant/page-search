@@ -7,7 +7,7 @@ DATA_DIR = os.path.join(ROOT_DIR, 'data')
 
 COLLECTION_NAME = "site"
 
-# load_dotenv()
+load_dotenv()
 
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
 QDRANT_PORT = os.environ.get("QDRANT_PORT", 6333)
