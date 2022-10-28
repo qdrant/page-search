@@ -19,14 +19,18 @@ class SiteSearcher:
         section_filter = self._get_section_filter(section=section)
         return self.neural_searcher.search(text=text, filter_=section_filter)
 
-    def _prefix_search(self, text, section):
-        return self.text_searcher.search(text=text, section=section, tags=["h1", "h2", "h3", "h4", "h5", "h6"])
+    def _prefix_search(self, text, section, headers=True):
+        tags = ["h1", "h2", "h3", "h4", "h5", "h6"] if headers else ["p", "li"]
+        return self.text_searcher.search(text=text, section=section, tags=tags)
 
     def search(self, text, section=None):
-        if len(text) > 3:
-            prefix_results = self._prefix_search(text=text, section=section)
-            if len(prefix_results) < SEARCH_LIMIT:
-                return prefix_results + self._neural_search(text=text, section=section)[:SEARCH_LIMIT - len(prefix_results)]
-            return prefix_results
-        else:
-            return self._prefix_search(text=text, section=section)
+        prefix_results = self._prefix_search(text=text, section=section)
+        additional_results = []
+
+        if len(prefix_results) < SEARCH_LIMIT:
+            if len(text) > 3:
+                additional_results = self._neural_search(text=text, section=section)
+            else:
+                additional_results = self._prefix_search(text=text, section=section, headers=False)
+
+        return prefix_results + additional_results[:SEARCH_LIMIT - len(prefix_results)]

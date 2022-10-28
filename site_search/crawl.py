@@ -4,8 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional
 
-import urllib.parse
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import requests
 import tqdm as tqdm
 from bs4 import BeautifulSoup
@@ -75,8 +74,9 @@ def selector_soup(element):
 
 
 class Crawler:
-    def __init__(self, site):
+    def __init__(self, site, relative_urls=True):
         self.site = site
+        self.relative_urls = relative_urls
         self.pages = []
 
     def download_sitemap(self, sitemap_url: Optional[str] = None):
@@ -99,7 +99,7 @@ class Crawler:
             index_sitemap = IndexWebsiteSitemap(url=self.site, sub_sitemaps=sitemaps)
             return index_sitemap.all_pages()
 
-    def crawl_page(self, url: str) -> List[PageAbstract]:
+    def crawl_page(self, url: str, content_selector="article") -> List[PageAbstract]:
         abstracts = []
 
         sections = get_path_hierarchy(url)
@@ -117,27 +117,41 @@ class Crawler:
         if title:
             titles.append(title.text)
 
-        current_headers_per_element = {}
+        current_header = None
 
-        for tag in soup.find_all(['p', *HEADER_TAGS]):
+        if content_selector:
+            content = soup.select_one(content_selector)
+        else:
+            content = soup
+
+        if content is None:
+            return abstracts
+
+        for tag in content.find_all(['p', 'li', *HEADER_TAGS]):
             tag_text = tag.text.strip()
             parent_selector = selector_soup(tag.parent)
 
             if tag.name in HEADER_TAGS:
-                current_headers_per_element[parent_selector] = tag.text
+                current_header = tag.text
                 parent_headers = []
             else:
-                parent_headers = current_headers_per_element.get(parent_selector, None)
+                parent_headers = current_header
                 if parent_headers:
                     parent_headers = [parent_headers]
                 else:
                     parent_headers = []
 
+            if self.relative_urls:
+                # Remove domain from url
+                save_url = urlparse(url).path
+            else:
+                save_url = url
+
             for line in tag_text.splitlines():
                 if line:
                     abstracts.append(PageAbstract(
                         text=line,
-                        url=url,
+                        url=save_url,
                         tag=tag.name,
                         location=selector_soup(tag),
                         titles=titles + parent_headers,
@@ -147,8 +161,8 @@ class Crawler:
         return abstracts
 
 
-if __name__ == '__main__':
-    page_url = "https://qdrant.tech/"
+def download_and_save():
+    page_url = "https://deploy-preview-79--condescending-goldwasser-91acf0.netlify.app/"
     site_map_url = page_url + "sitemap.xml"
     crawler = Crawler(page_url)
 
@@ -157,7 +171,7 @@ if __name__ == '__main__':
     with open(os.path.join(DATA_DIR, 'abstracts.jsonl'), 'w') as out:
         page_urls = []
         for page in pages:
-            full_page_url = urllib.parse.urljoin(page_url, page.url)
+            full_page_url = urljoin(page_url, page.url)
             page_urls.append(full_page_url)
 
         with multiprocessing.Pool(processes=10) as pool:
@@ -165,3 +179,17 @@ if __name__ == '__main__':
                 for abstract in abstracts:
                     out.write(json.dumps(abstract.__dict__))
                     out.write('\n')
+
+
+if __name__ == '__main__':
+    download_and_save()
+
+    # page_url = "https://deploy-preview-79--condescending-goldwasser-91acf0.netlify.app/"
+    # site_map_url = page_url + "sitemap.xml"
+    # crawler = Crawler(page_url)
+    #
+    # abstracts = crawler.crawl_page(
+    #     "https://deploy-preview-79--condescending-goldwasser-91acf0.netlify.app/documentation/search/")
+    #
+    # for abstract in abstracts:
+    #     print(abstract)
