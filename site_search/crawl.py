@@ -162,7 +162,7 @@ class Crawler:
 
 
 def download_and_save():
-    page_url = "https://deploy-preview-79--condescending-goldwasser-91acf0.netlify.app/"
+    page_url = "https://qdrant.tech/"
     site_map_url = page_url + "sitemap.xml"
     crawler = Crawler(page_url)
 
