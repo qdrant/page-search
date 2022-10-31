@@ -1,12 +1,14 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi_utils.timing import add_timing_middleware
+from loguru import logger
 
 from site_search.config import COLLECTION_NAME
-from site_search.neural_searcher import NeuralSearcher
-from fastapi.middleware.cors import CORSMiddleware
-
 from site_search.site_searcher import SiteSearcher
 
 app = FastAPI()
+
+add_timing_middleware(app, record=logger.info, prefix="app", exclude="untimed")
 
 app.add_middleware(
     CORSMiddleware,
