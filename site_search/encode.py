@@ -10,7 +10,7 @@ from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams,
 from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY
 from site_search.neural_searcher import NeuralSearcher
 
-BATCH_SIZE = 256
+BATCH_SIZE = 16
 
 encoder = NeuralSearcher(COLLECTION_NAME)
 
@@ -43,7 +43,7 @@ if __name__ == '__main__':
     qdrant_client.recreate_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(
-            size=encoder.model.get_sentence_embedding_dimension(),
+            size=2048,  # cohere medium model
             distance=Distance.COSINE
         )
     )
