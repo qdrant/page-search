@@ -43,7 +43,7 @@ if __name__ == '__main__':
     qdrant_client.recreate_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(
-            size=2048,  # cohere medium model
+            size=1024,  # cohere medium model
             distance=Distance.COSINE
         )
     )

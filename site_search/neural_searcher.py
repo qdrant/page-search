@@ -31,7 +31,7 @@ class NeuralSearcher:
                                           prefer_grpc=True)
 
     def search(self, text: str, filter_: dict = None) -> List[dict]:
-        vector = self.model.embed([text], model="medium").embeddings[0]
+        vector = self.model.embed([text], model="small").embeddings[0]
         search_result = self.qdrant_client.search(
             collection_name=self.collection_name,
             query_vector=vector,
@@ -50,7 +50,7 @@ class NeuralSearcher:
     def encode_iter(self, texts: Iterable[str]) -> Iterable[list]:
         for batch in iter_batch(texts, BATCH_SIZE):
             embeds = self.model.embed(texts=batch,
-                                      model='medium',
+                                      model='small',
                                       truncate='LEFT').embeddings
             time.sleep(0.5)  # respect the API rate limit
             for embedding in embeds:
