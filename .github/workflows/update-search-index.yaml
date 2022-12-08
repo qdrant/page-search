@@ -21,4 +21,4 @@ jobs:
     - name: crawl and index
       run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data qdrant/page-search python -m site_search.crawl
-        docker run --rm -i -v $(pwd)/tmp:/code/data qdrant/page-search -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} python -m site_search.encode
+        docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} qdrant/page-search python -m site_search.encode
