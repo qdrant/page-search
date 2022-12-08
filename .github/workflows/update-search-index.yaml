@@ -20,8 +20,8 @@ jobs:
     - uses: actions/checkout@v3
     - name: crawl and index
       run: |
-        docker run -it --rm -v $(pwd)/tmp:/code/data qdrant/page-search python -m site_search.crawl
-        docker run -it --rm \
+        docker run --rm -i -v $(pwd)/tmp:/code/data qdrant/page-search python -m site_search.crawl
+        docker run --rm -i \
           -v $(pwd)/tmp:/code/data qdrant/page-search \
           -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} \
           -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} \
