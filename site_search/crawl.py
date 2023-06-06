@@ -74,7 +74,8 @@ def selector_soup(element):
 
 
 class Crawler:
-    def __init__(self, site, relative_urls=True):
+    def __init__(self, site, relative_urls=True, split_lines=True):
+        self.split_lines = split_lines
         self.site = site
         self.relative_urls = relative_urls
         self.pages = []
@@ -147,7 +148,12 @@ class Crawler:
             else:
                 save_url = url
 
-            for line in tag_text.splitlines():
+            if self.split_lines:
+                lines = tag_text.splitlines()
+            else:
+                lines = [tag_text]
+
+            for line in lines:
                 if line:
                     abstracts.append(PageAbstract(
                         text=line,
@@ -161,14 +167,14 @@ class Crawler:
         return abstracts
 
 
-def download_and_save():
+def download_and_save(file_name='abstracts.jsonl', split_lines=True):
     page_url = "https://qdrant.tech/"
     site_map_url = page_url + "sitemap.xml"
-    crawler = Crawler(page_url)
+    crawler = Crawler(page_url, split_lines=split_lines)
 
     pages = crawler.download_sitemap(site_map_url)
 
-    with open(os.path.join(DATA_DIR, 'abstracts.jsonl'), 'w') as out:
+    with open(os.path.join(DATA_DIR, file_name), 'w') as out:
         page_urls = []
         for page in pages:
             full_page_url = urljoin(page_url, page.url)
