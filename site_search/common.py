@@ -1,4 +1,5 @@
 import re
+import uuid
 
 
 def limit_text(text: str, lim: int = 80):
@@ -47,3 +48,7 @@ def highlight_search_match(text: str, query: str, before="<b>", after="</b>"):
     """
     # Replace matches only on word boundaries
     return re.compile(r"\b(" + re.escape(query) + ")", re.IGNORECASE).sub(before + '\\1' + after, text)
+
+
+def section_hash(url, titles) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, url + ''.join(titles)))

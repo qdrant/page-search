@@ -1,8 +1,9 @@
 import json
 import multiprocessing
 import os
+import uuid
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple, Iterable
 
 from urllib.parse import urlparse, urljoin
 import requests
@@ -101,6 +102,12 @@ class Crawler:
             return index_sitemap.all_pages()
 
     def crawl_page(self, url: str, content_selector="article") -> List[PageAbstract]:
+        if self.relative_urls:
+            # Remove domain from url
+            save_url = urlparse(url).path
+        else:
+            save_url = url
+
         abstracts = []
 
         sections = get_path_hierarchy(url)
@@ -141,12 +148,6 @@ class Crawler:
                     parent_headers = [parent_headers]
                 else:
                     parent_headers = []
-
-            if self.relative_urls:
-                # Remove domain from url
-                save_url = urlparse(url).path
-            else:
-                save_url = url
 
             if self.split_lines:
                 lines = tag_text.splitlines()
@@ -190,12 +191,12 @@ def download_and_save(file_name='abstracts.jsonl', split_lines=True):
 if __name__ == '__main__':
     download_and_save()
 
-    # page_url = "https://deploy-preview-79--condescending-goldwasser-91acf0.netlify.app/"
+    # page_url = "https://qdrant.tech/"
     # site_map_url = page_url + "sitemap.xml"
     # crawler = Crawler(page_url)
     #
-    # abstracts = crawler.crawl_page(
-    #     "https://deploy-preview-79--condescending-goldwasser-91acf0.netlify.app/documentation/search/")
+    # abstracts = crawler.crawl_page_sections(
+    #     "https://qdrant.tech/documentation/concepts/collections/")
     #
     # for abstract in abstracts:
     #     print(abstract)
