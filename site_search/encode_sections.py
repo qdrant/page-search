@@ -82,6 +82,9 @@ def upload_abstracts(qdrant_client):
         vectors_config=VectorParams(
             size=encoder.model.get_sentence_embedding_dimension(),
             distance=Distance.COSINE
+        ),
+        optimizers_config=models.OptimizersConfigDiff(
+            default_segment_number=2
         )
     )
 
