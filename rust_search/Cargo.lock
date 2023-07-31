@@ -1492,8 +1492,6 @@ dependencies = [
  "ort",
  "qdrant-client",
  "rust_tokenizers",
- "rustls 0.20.8",
- "rustls-pemfile",
  "safe-transmute",
  "serde",
  "serde_json",

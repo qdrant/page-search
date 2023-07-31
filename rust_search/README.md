@@ -5,7 +5,7 @@ Site search, fast
 This version of the search uses a local model. So you need the model in the working path of the service. To get the ONNX file, run
 
 ```bash
-curl -o all-MiniLM-L6-v2.onnx https://huggingface.co/optimum/all-MiniLM-L6-v2/blob/main/model.onnx
+curl -o all-MiniLM-L6-v2.onnx https://huggingface.co/optimum/all-MiniLM-L6-v2/resolve/main/model.onnx
 ```
 
 in the `rust_search` directory.
