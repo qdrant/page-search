@@ -47,7 +47,7 @@ fn highlight(result: &mut String, text: &str, q: &str) {
 }
 
 fn add_point(result: &mut String, payload: &HashMap<String, Value>, q: &str) {
-    result.push_str("{\"payload:");
+    result.push_str("{\"payload\":");
     result.push_str(&serde_json::to_string(payload).unwrap()); // should not be able to fail
     result.push_str(",\"highlight\":\"");
     if let Some(Kind::StringValue(text)) = &payload.get("text").and_then(|v| v.kind.as_ref()) {
@@ -70,6 +70,7 @@ fn prefix_to_id(prefix: &str) -> PointId {
 #[derive(Deserialize)]
 struct Search {
     q: String,
+    #[serde(default)]
     section: String,
 }
 
@@ -80,8 +81,7 @@ async fn query(
 ) -> HttpResponse {
     let Search { q, section } = search.into_inner();
     let (tokenizer, session, qdrant) = context.get_ref();
-    let mut points = Vec::new();
-    if q.len() < 5 {
+    let mut points = if q.len() < 5 {
         let filter = if section.is_empty() {
             None
         } else {
@@ -105,10 +105,12 @@ async fn query(
             })
             .await
         {
-            Ok(RecommendResponse { result, .. }) => points = result,
-            Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+            Ok(RecommendResponse { result, .. }) => result,
+            Err(_) => Vec::new(),
         }
-    }
+    } else {
+        Vec::new()
+    };
     if points.is_empty() {
         // tokenize
         let mut encoding = tokenizer.encode(&q, None, 512, &TruncationStrategy::LongestFirst, 1);
