@@ -82,18 +82,19 @@ async fn query(
     let (tokenizer, session, qdrant) = context.get_ref();
     let mut points = Vec::new();
     if q.len() < 5 {
-        let mut must = vec![Condition::matches("text", q.clone())];
-        if !section.is_empty() {
-            must.push(Condition::matches("sections", section.clone()));
-        }
+        let filter = if section.is_empty() {
+            None
+        } else {
+            Some(Filter::all([Condition::matches(
+                "sections",
+                MatchValue::Keyword(section.clone()),
+            )]))
+        };
         match qdrant
             .recommend(&RecommendPoints {
                 collection_name: COLLECTION_NAME.to_string(),
                 positive: vec![prefix_to_id(&q)],
-                filter: Some(Filter {
-                    must,
-                    ..Default::default()
-                }),
+                filter,
                 limit: SEARCH_LIMIT,
                 with_payload: Some(true.into()),
                 lookup_from: Some(LookupLocation {
