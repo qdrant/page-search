@@ -1,4 +1,7 @@
-use std::{borrow::Cow, collections::HashMap, net::SocketAddr, ops::Not, sync::Arc};
+mod common;
+
+use std::{borrow::Cow, net::SocketAddr, sync::Arc};
+use std::collections::{HashMap, HashSet};
 
 use actix_web::{
     get,
@@ -7,53 +10,49 @@ use actix_web::{
     web::{Data, Query},
     App, HttpResponse, HttpServer,
 };
-use ndarray::{Array, Axis, CowArray};
-use ort::{tensor::OrtOwnedTensor, Environment, Session, SessionBuilder, Value as OrtValue};
+use ort::{Environment, Session, SessionBuilder};
 use qdrant_client::{
     prelude::*,
-    qdrant::{
-        condition::ConditionOneOf, r#match::MatchValue, value::Kind, Condition, FieldCondition,
-        Filter, LookupLocation, Match, PointId, RecommendPoints, RecommendResponse, SearchResponse,
-        Value,
+    qdrant::{r#match::MatchValue, value::Kind, Condition,
+             Filter, PointId, RecommendPoints,
     },
 };
-use rust_tokenizers::tokenizer::{BertTokenizer, Tokenizer, TruncationStrategy};
-use serde::Deserialize;
+use qdrant_client::prelude::point_id::PointIdOptions;
+use qdrant_client::qdrant::{BatchResult, LookupLocation, RecommendBatchPoints, ScoredPoint, SearchBatchPoints};
+use regex::Regex;
+use rust_tokenizers::tokenizer::BertTokenizer;
+use serde::{Deserialize, Serialize};
+use crate::common::{COLLECTION_NAME, get_embedding, get_qdrant_url, MODEL_PATH, PREFIX_COLLECTION_NAME};
 
-const MODEL_PATH: &str = "all-MiniLM-L6-v2.onnx";
 const VOCAB_PATH: &str = "vocab.txt";
 const SPECIAL_TOKEN_PATH: &str = "special_tokens_map.json";
-const COLLECTION_NAME: &str = "site";
 const SEARCH_LIMIT: u64 = 5;
 const TEXT_LIMIT: usize = 80;
 
-fn take_n_chars(text: &str, limit: usize) -> Cow<'_, str> {
-    if text.len() < limit {
-        text.into()
-    } else if let Some((i, _)) = text.char_indices().nth(limit) {
-        Cow::Owned(format!("{}...", &text[..i]))
-    } else {
-        text.into()
-    }
-}
 
-fn highlight(result: &mut String, text: &str, q: &str) {
-    let mut split = text.splitn(2, q);
-    if let (Some(before), Some(after)) = (split.next(), split.next()) {
-        result.extend([before, "<b>", q, "</b>", after]);
+/// Postprocess search response
+///
+/// - Highlight matching query in text using `<b>` tag on word boundaries
+/// - Limit text length to `TEXT_LIMIT` characters
+fn post_process_response_text(text: &str, query: &str) -> String {
+    let text = if text.chars().count() > TEXT_LIMIT {
+        format!("{}...", &text.chars().take(TEXT_LIMIT).collect::<String>())
     } else {
-        result.push_str(text);
-    }
-}
+        text.to_string()
+    };
 
-fn add_point(result: &mut String, payload: &HashMap<String, Value>, q: &str) {
-    result.push_str("{\"payload\":");
-    result.push_str(&serde_json::to_string(payload).unwrap()); // should not be able to fail
-    result.push_str(",\"highlight\":\"");
-    if let Some(Kind::StringValue(text)) = &payload.get("text").and_then(|v| v.kind.as_ref()) {
-        highlight(result, &take_n_chars(text, TEXT_LIMIT), q);
-    }
-    result.push_str("\"}");
+    let escaped_query = regex::escape(query);
+    let pattern = format!(r"(^|\W)({})($|\W)", escaped_query);
+    let re = Regex::new(&pattern).expect("Failed to compile regex");
+
+    let before = "<b>";
+    let after = "</b>";
+
+    let highlighted_text = re.replace_all(&text, |caps: &regex::Captures| {
+        format!("{}{}{}{}{}", &caps[1], before, &caps[2], after, &caps[3])
+    });
+
+    highlighted_text.to_string()
 }
 
 fn prefix_to_id(prefix: &str) -> PointId {
@@ -74,111 +73,242 @@ struct Search {
     section: String,
 }
 
+#[derive(Serialize)]
+struct ResponseItem {
+    pub payload: HashMap<String, Value>,
+    pub highlight: String,
+}
+
+// There are 4 levels of filtering priority:
+// 1. Search with text match in header
+// 2. Search with text match in body
+// 3. Search with no text match in header
+// 4. Search with no text match
+
+// We perform all 4 searches in parallel and then merge results
+
+fn get_list_of_title_tags() -> Vec<String> {
+    vec![
+        "h1".to_string(),
+        "h2".to_string(),
+        "h3".to_string(),
+        "h4".to_string(),
+        "h5".to_string(),
+        "h6".to_string(),
+    ]
+}
+
+fn get_list_of_body_tags() -> Vec<String> {
+    vec![
+        "p".to_string(),
+        "li".to_string(),
+    ]
+}
+
+fn get_title_text_filter(query: &str) -> Vec<Condition> {
+    vec![
+        Condition::matches("tag", get_list_of_title_tags()),
+        Condition::matches("text", MatchValue::Text(query.to_string())),
+    ]
+}
+
+fn get_body_text_filter(query: &str) -> Vec<Condition> {
+    vec![
+        Condition::matches("tag", get_list_of_body_tags()),
+        Condition::matches("text", MatchValue::Text(query.to_string())),
+    ]
+}
+
+fn get_title_filter() -> Vec<Condition> {
+    vec![
+        Condition::matches("tag", get_list_of_title_tags()),
+    ]
+}
+
+
+fn get_recommend_request(query: &str, conditions: impl IntoIterator<Item=Condition>) -> RecommendPoints {
+    RecommendPoints {
+        collection_name: COLLECTION_NAME.to_string(),
+        positive: vec![prefix_to_id(query)],
+        filter: Some(Filter::must(conditions)),
+        limit: SEARCH_LIMIT,
+        with_payload: Some(true.into()),
+        lookup_from: Some(LookupLocation {
+            collection_name: PREFIX_COLLECTION_NAME.to_string(),
+            vector_name: None,
+        }),
+        ..Default::default()
+    }
+}
+
+fn get_search_request(vector: &[f32], conditions: impl IntoIterator<Item=Condition>) -> SearchPoints {
+    SearchPoints {
+        collection_name: COLLECTION_NAME.to_string(),
+        vector: vector.to_vec(),
+        filter: Some(Filter::must(conditions)),
+        limit: SEARCH_LIMIT,
+        with_payload: Some(true.into()),
+        ..Default::default()
+    }
+}
+
+fn point_id_to_hash(id: PointId) -> String {
+    match id.point_id_options {
+        None => "".to_string(),
+        Some(PointIdOptions::Num(num)) => format!("{}", num),
+        Some(PointIdOptions::Uuid(uuid)) => uuid,
+    }
+}
+
+fn merge_results(results: Vec<BatchResult>) -> Vec<ScoredPoint> {
+    let mut seen = HashSet::new();
+    let mut res = vec![];
+    for batch_result in results {
+        for point in batch_result.result {
+            let hashable_id = point.id.clone().map(point_id_to_hash).unwrap_or_default();
+
+            if seen.contains(&hashable_id) {
+                continue;
+            }
+            seen.insert(hashable_id);
+            res.push(point);
+        }
+        if res.len() >= SEARCH_LIMIT as usize {
+            break;
+        }
+    }
+    res.into_iter().take(SEARCH_LIMIT as usize).collect()
+}
+
+async fn recommend_request(client: &QdrantClient, section_condition: Option<Condition>, query: &str) -> Vec<ScoredPoint> {
+    let mut title_text_filter = get_title_text_filter(query);
+    let mut body_text_filter = get_body_text_filter(query);
+    let mut title_filter = get_title_filter();
+    let mut no_text_filter = vec![];
+
+    if let Some(section_condition) = section_condition {
+        title_text_filter.push(section_condition.clone());
+        body_text_filter.push(section_condition.clone());
+        title_filter.push(section_condition.clone());
+        no_text_filter.push(section_condition);
+    }
+
+    match client.recommend_batch(
+        &RecommendBatchPoints {
+            collection_name: COLLECTION_NAME.to_string(),
+            recommend_points: vec![
+                get_recommend_request(query, title_text_filter),
+                get_recommend_request(query, body_text_filter),
+                get_recommend_request(query, title_filter),
+                get_recommend_request(query, no_text_filter),
+            ],
+            read_consistency: None,
+        }
+    ).await {
+        Ok(response) => {
+            merge_results(response.result)
+        }
+        Err(_) => { // TODO: distinguish between 404 and other errors
+            vec![]
+        }
+    }
+}
+
+async fn search_request(client: &QdrantClient, section_condition: Option<Condition>, query: &str, vector: Vec<f32>) -> Result<Vec<ScoredPoint>, HttpResponse> {
+    let mut title_text_filter = get_title_text_filter(query);
+    let mut body_text_filter = get_body_text_filter(query);
+    let mut title_filter = get_title_filter();
+    let mut no_text_filter = vec![];
+
+    if let Some(section_condition) = section_condition {
+        title_text_filter.push(section_condition.clone());
+        body_text_filter.push(section_condition.clone());
+        title_filter.push(section_condition.clone());
+        no_text_filter.push(section_condition);
+    }
+
+    match client.search_batch_points(
+        &SearchBatchPoints {
+            collection_name: COLLECTION_NAME.to_string(),
+            search_points: vec![
+                get_search_request(&vector, title_text_filter),
+                get_search_request(&vector, body_text_filter),
+                get_search_request(&vector, title_filter),
+                get_search_request(&vector, no_text_filter),
+            ],
+            read_consistency: None,
+        }
+    ).await {
+        Ok(response) => {
+            Ok(merge_results(response.result))
+        }
+        Err(e) => Err(HttpResponse::InternalServerError().body(e.to_string()))
+    }
+}
+
 #[get("/api/search")]
-async fn query(
+async fn query_handler(
     context: Data<(BertTokenizer, Session, QdrantClient)>,
     search: Query<Search>,
 ) -> HttpResponse {
     let Search { q, section } = search.into_inner();
+
+    println!("Query: {}", q);
+
     let (tokenizer, session, qdrant) = context.get_ref();
+
+    let section_condition = if section.is_empty() {
+        None
+    } else {
+        Some(Condition::matches(
+            "sections",
+            MatchValue::Keyword(section.clone()),
+        ))
+    };
+
     let mut points = if q.len() < 5 {
-        let filter = if section.is_empty() {
-            None
-        } else {
-            Some(Filter::all([Condition::matches(
-                "sections",
-                MatchValue::Keyword(section.clone()),
-            )]))
-        };
-        match qdrant
-            .recommend(&RecommendPoints {
-                collection_name: COLLECTION_NAME.to_string(),
-                positive: vec![prefix_to_id(&q)],
-                filter,
-                limit: SEARCH_LIMIT,
-                with_payload: Some(true.into()),
-                lookup_from: Some(LookupLocation {
-                    collection_name: "prefix-cache".to_string(),
-                    vector_name: None,
-                }),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok(RecommendResponse { result, .. }) => result,
-            Err(_) => Vec::new(),
-        }
+        recommend_request(qdrant, section_condition.clone(), &q).await
     } else {
         Vec::new()
     };
     if points.is_empty() {
-        // tokenize
-        let mut encoding = tokenizer.encode(&q, None, 512, &TruncationStrategy::LongestFirst, 1);
-        let alloc = session.allocator();
-        let token_ids = std::mem::take(&mut encoding.token_ids);
-        let shape = (1, token_ids.len());
-        let token_ids = Array::from_shape_vec(shape, token_ids).unwrap();
-        let attentions = Array::from_elem(shape, 1_i64);
-        let type_ids = Array::from_elem(shape, 0_i64);
-        // embed
-        let output: OrtOwnedTensor<f32, _> = session
-            .run(vec![
-                OrtValue::from_array(alloc, &CowArray::from(token_ids.into_dyn())).unwrap(),
-                OrtValue::from_array(alloc, &CowArray::from(attentions.into_dyn())).unwrap(),
-                OrtValue::from_array(alloc, &CowArray::from(type_ids.into_dyn())).unwrap(),
-            ])
-            .unwrap()[0]
-            .try_extract()
-            .unwrap();
-        let pooled = output.view().mean_axis(Axis(1)).unwrap();
-        let vector = pooled.as_slice().unwrap().to_vec();
-        // query qdrant
-        match qdrant
-            .search_points(&SearchPoints {
-                collection_name: COLLECTION_NAME.to_string(),
-                vector,
-                filter: section.is_empty().not().then(|| Filter {
-                    must: vec![Condition {
-                        condition_one_of: Some(ConditionOneOf::Field(FieldCondition {
-                            key: "sections".into(),
-                            r#match: Some(Match {
-                                match_value: Some(MatchValue::Keyword(section)),
-                            }),
-                            ..Default::default()
-                        })),
-                    }],
-                    ..Default::default()
-                }),
-                limit: SEARCH_LIMIT,
-                with_payload: Some(true.into()),
-                ..Default::default()
-            })
-            .await
+        let vector = get_embedding(tokenizer, session, &q);
+        match search_request(qdrant, section_condition, &q, vector).await
         {
-            Ok(SearchResponse { result, .. }) => points = result,
-            Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+            Ok(search_response) => points = search_response,
+            Err(e) => return e,
         }
     };
-    let mut result = String::from("[");
-    let mut points = points.into_iter();
-    if let Some(first) = points.next() {
-        add_point(&mut result, &first.payload, &q);
-        for point in points {
-            result.push(',');
-            add_point(&mut result, &point.payload, &q);
-        }
-    }
-    result.push(']');
+
+    // Postprocess search results
+    let response: Vec<_> = points
+        .into_iter()
+        .map(|point| {
+            let highlight = if let Some(Kind::StringValue(text)) = &point.payload.get("text").and_then(|v| v.kind.as_ref()) {
+                post_process_response_text(text, &q)
+            } else {
+                "".to_string()
+            };
+
+            ResponseItem {
+                payload: point.payload,
+                highlight,
+            }
+        }).collect();
+
     HttpResponse::Ok()
         .insert_header(ContentType::json())
-        .body(result)
+        .body(
+            serde_json::to_string(&response)
+                .expect("Failed to serialize response"),
+        )
 }
 
 #[main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
-    let uri = std::env::var("SERVICE_URL").map_or("127.0.0.1:5497".into(), Cow::Owned);
-    let qdrant_url = std::env::var("QDRANT_URL").map_or("http://localhost:6334".into(), Cow::Owned);
+    let uri = std::env::var("SERVICE_URL").map_or("0.0.0.0:8005".into(), Cow::Owned);
+    let qdrant_url = get_qdrant_url();
     let api_key = std::env::var("QDRANT_API_KEY");
     let addr: SocketAddr = uri.parse().expect("malformed URI");
     let tokenizer = BertTokenizer::from_file_with_special_token_mapping(
@@ -187,7 +317,7 @@ async fn main() -> std::io::Result<()> {
         false,
         SPECIAL_TOKEN_PATH,
     )
-    .unwrap();
+        .unwrap();
     let env = Arc::new(Environment::builder().build().unwrap());
     let session = SessionBuilder::new(&env)
         .unwrap()
@@ -204,7 +334,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(context.clone())
             .wrap(middleware::Logger::default())
-            .service(query)
+            .service(query_handler)
     });
     server.bind(addr)?.run().await
 }

@@ -29,7 +29,5 @@ Running the service can be done via
 
 ```bash
 export SERVICE_URL=#<the URL the service will be listening to>
-# if the service URL uses HTTPS, also supply a certificate file
-export CERTS=#<PEM file with your service's public and private key>
 cargo run --release --bin service
 ```
