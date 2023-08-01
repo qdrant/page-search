@@ -2,6 +2,7 @@ mod common;
 
 use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use actix_cors::Cors;
 use actix_web::{
@@ -83,6 +84,7 @@ struct ResponseItem {
 #[derive(Serialize)]
 struct Response {
     pub result: Vec<ResponseItem>,
+    pub time: f64,
 }
 
 // There are 4 levels of filtering priority:
@@ -257,6 +259,8 @@ async fn query_handler(
     context: Data<(BertTokenizer, Session, QdrantClient)>,
     search: Query<Search>,
 ) -> HttpResponse {
+    let time_start = Instant::now();
+
     let Search { q, section } = search.into_inner();
 
     println!("Query: {}", q);
@@ -305,7 +309,10 @@ async fn query_handler(
     HttpResponse::Ok()
         .insert_header(ContentType::json())
         .body(
-            serde_json::to_string(&Response { result: response_items })
+            serde_json::to_string(&Response {
+                result: response_items,
+                time: time_start.elapsed().as_micros() as f64 / 1_000_000.0,
+            })
                 .expect("Failed to serialize response"),
         )
 }
