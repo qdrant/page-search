@@ -3,6 +3,7 @@ mod common;
 use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 use std::collections::{HashMap, HashSet};
 
+use actix_cors::Cors;
 use actix_web::{
     get,
     http::header::ContentType,
@@ -331,8 +332,15 @@ async fn main() -> std::io::Result<()> {
     qdrant.health_check().await.unwrap();
     let context = Data::new((tokenizer, session, qdrant));
     let server = HttpServer::new(move || {
+
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header();
+
         App::new()
             .app_data(context.clone())
+            .wrap(cors)
             .wrap(middleware::Logger::default())
             .service(query_handler)
     });

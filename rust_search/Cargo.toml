@@ -19,6 +19,7 @@ path = "src/setup_collection.rs"
 
 [dependencies]
 actix-web = "4.3.1"
+actix-cors = "0.6.4"
 anyhow = "1.0.71"
 env_logger = "0.10.0"
 ndarray = "0.15.6"
