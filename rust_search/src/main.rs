@@ -74,7 +74,7 @@ struct Search {
     section: String,
 }
 
-#[get("/search")]
+#[get("/api/search")]
 async fn query(
     context: Data<(BertTokenizer, Session, QdrantClient)>,
     search: Query<Search>,

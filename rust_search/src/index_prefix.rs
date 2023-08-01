@@ -6,6 +6,7 @@ use qdrant_client::qdrant::{
     vectors_config::Config, PointId, PointStruct, VectorParams, Vectors, VectorsConfig,
 };
 use rust_tokenizers::tokenizer::{BertTokenizer, Tokenizer, TruncationStrategy};
+use std::collections::{HashMap, HashSet};
 use std::{io::Write, sync::Arc};
 use tokio::main;
 
@@ -29,7 +30,7 @@ fn n_chars(word: &str, n: usize) -> &str {
     if word.len() <= n {
         word
     } else {
-        &word[..word.char_indices().nth(n).map(|(i, _)| i).unwrap_or(0)]
+        &word[..word.char_indices().nth(n).map_or(0, |(i, _)| i)]
     }
 }
 
@@ -37,7 +38,7 @@ fn n_chars(word: &str, n: usize) -> &str {
 async fn main() -> Result<()> {
     // Get word prefixes
     let words = std::fs::read_to_string("words.txt")?;
-    let mut prefixes = std::collections::HashSet::new();
+    let mut prefixes = HashSet::new();
     for word in words.lines() {
         for n in 1..6 {
             prefixes.insert(n_chars(word, n));
@@ -62,7 +63,7 @@ async fn main() -> Result<()> {
     let mut stdout = stdout.lock();
     let mut points = prefixes.into_iter().map(|prefix| {
         let mut encoding =
-            tokenizer.encode(&prefix, None, 512, &TruncationStrategy::LongestFirst, 1);
+            tokenizer.encode(prefix, None, 512, &TruncationStrategy::LongestFirst, 1);
         let token_ids = std::mem::take(&mut encoding.token_ids);
         let shape = (1, token_ids.len());
         let token_ids = Array::from_shape_vec(shape, token_ids).unwrap();
@@ -89,7 +90,7 @@ async fn main() -> Result<()> {
         PointStruct {
             id: Some(prefix_to_id(prefix)),
             vectors: Some(Vectors::from(vector)),
-            payload: Default::default(),
+            payload: HashMap::default(),
         }
     });
 

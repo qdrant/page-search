@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     let site_reader = BufReader::new(site_file);
     let mut points = site_reader.lines().map(move |line| {
         let payload: HashMap<String, Value> = serde_json::from_str(&line.unwrap()).unwrap();
-        let text = payload.get("text").and_then(|v| v.as_str()).unwrap();
+        let text = payload.get("text").and_then(Value::as_str).unwrap();
         let mut encoding = tokenizer.encode(text, None, 512, &TruncationStrategy::LongestFirst, 1);
         let token_ids = std::mem::take(&mut encoding.token_ids);
         let shape = (1, token_ids.len());
