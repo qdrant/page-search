@@ -214,6 +214,7 @@ async fn recommend_request(client: &QdrantClient, section_condition: Option<Cond
         }
     ).await {
         Ok(response) => {
+            log::debug!("Recommend Qdrant time: {:?}", response.time);
             merge_results(response.result)
         }
         Err(_) => { // TODO: distinguish between 404 and other errors
@@ -248,6 +249,7 @@ async fn search_request(client: &QdrantClient, section_condition: Option<Conditi
         }
     ).await {
         Ok(response) => {
+            log::debug!("Search Qdrant time: {:?}", response.time);
             Ok(merge_results(response.result))
         }
         Err(e) => Err(HttpResponse::InternalServerError().body(e.to_string()))
@@ -263,7 +265,7 @@ async fn query_handler(
 
     let Search { q, section } = search.into_inner();
 
-    println!("Query: {}", q);
+    log::info!("Query: {}", q);
 
     let (tokenizer, session, qdrant) = context.get_ref();
 
@@ -276,19 +278,36 @@ async fn query_handler(
         ))
     };
 
+    let reco_start = Instant::now();
+
     let mut points = if q.len() < 5 {
         recommend_request(qdrant, section_condition.clone(), &q).await
     } else {
         Vec::new()
     };
+
+    log::debug!("Recommendation time: {:?}", reco_start.elapsed());
+
     if points.is_empty() {
+        let embedding_start = Instant::now();
+
         let vector = get_embedding(tokenizer, session, &q);
-        match search_request(qdrant, section_condition, &q, vector).await
+
+        log::debug!("Embedding time: {:?}", embedding_start.elapsed());
+
+        let search_start = Instant::now();
+
+        let res = match search_request(qdrant, section_condition, &q, vector).await
         {
             Ok(search_response) => points = search_response,
             Err(e) => return e,
-        }
+        };
+
+        log::debug!("Search time: {:?}", search_start.elapsed());
+
+        res
     };
+
 
     // Postprocess search results
     let response_items: Vec<_> = points
@@ -319,7 +338,10 @@ async fn query_handler(
 
 #[main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init();
+    let mut log_builder = env_logger::Builder::new();
+    log_builder.parse_filters(&std::env::var("SERVICE_LOG_LEVEL").unwrap_or("info".into()));
+    log_builder.init();
+
     let uri = std::env::var("SERVICE_URL").map_or("0.0.0.0:8005".into(), Cow::Owned);
     let qdrant_url = get_qdrant_url();
     let api_key = std::env::var("QDRANT_API_KEY");

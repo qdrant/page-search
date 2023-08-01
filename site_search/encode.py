@@ -61,6 +61,13 @@ if __name__ == '__main__':
         wait=True
     )
 
+    tags_index_response = qdrant_client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name='tag',
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True
+    )
+
     text_index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,
         field_name='text',
