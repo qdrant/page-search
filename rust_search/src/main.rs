@@ -80,6 +80,11 @@ struct ResponseItem {
     pub highlight: String,
 }
 
+#[derive(Serialize)]
+struct Response {
+    pub result: Vec<ResponseItem>,
+}
+
 // There are 4 levels of filtering priority:
 // 1. Search with text match in header
 // 2. Search with text match in body
@@ -282,7 +287,7 @@ async fn query_handler(
     };
 
     // Postprocess search results
-    let response: Vec<_> = points
+    let response_items: Vec<_> = points
         .into_iter()
         .map(|point| {
             let highlight = if let Some(Kind::StringValue(text)) = &point.payload.get("text").and_then(|v| v.kind.as_ref()) {
@@ -300,7 +305,7 @@ async fn query_handler(
     HttpResponse::Ok()
         .insert_header(ContentType::json())
         .body(
-            serde_json::to_string(&response)
+            serde_json::to_string(&Response { result: response_items })
                 .expect("Failed to serialize response"),
         )
 }
@@ -332,7 +337,6 @@ async fn main() -> std::io::Result<()> {
     qdrant.health_check().await.unwrap();
     let context = Data::new((tokenizer, session, qdrant));
     let server = HttpServer::new(move || {
-
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
