@@ -12,6 +12,7 @@ use actix_web::{
     web::{Data, Query},
     App, HttpResponse, HttpServer,
 };
+use futures::StreamExt;
 use ort::{Environment, Session, SessionBuilder};
 use qdrant_client::{
     prelude::*,
@@ -21,7 +22,6 @@ use qdrant_client::{
 };
 use qdrant_client::prelude::point_id::PointIdOptions;
 use qdrant_client::qdrant::{BatchResult, LookupLocation, RecommendBatchPoints, ScoredPoint, SearchBatchPoints};
-use regex::Regex;
 use rust_tokenizers::tokenizer::BertTokenizer;
 use serde::{Deserialize, Serialize};
 use crate::common::{COLLECTION_NAME, get_embedding, get_qdrant_url, MODEL_PATH, PREFIX_COLLECTION_NAME};
@@ -44,8 +44,14 @@ fn post_process_response_text(text: &str, query: &str) -> String {
     };
 
     let escaped_query = regex::escape(query);
-    let pattern = format!(r"(^|\W)({})($|\W)", escaped_query);
-    let re = Regex::new(&pattern).expect("Failed to compile regex");
+    let pattern = format!(r"(^|\W)({})(.*)", escaped_query);
+
+    let mut regex_builder = regex::RegexBuilder::new(&pattern);
+    regex_builder
+        .case_insensitive(true)
+        .unicode(true);
+
+    let re = regex_builder.build().expect("Failed to compile regex");
 
     let before = "<b>";
     let after = "</b>";
@@ -188,7 +194,7 @@ fn merge_results(results: Vec<BatchResult>) -> Vec<ScoredPoint> {
     res.into_iter().take(SEARCH_LIMIT as usize).collect()
 }
 
-async fn recommend_request(client: &QdrantClient, section_condition: Option<Condition>, query: &str) -> Vec<ScoredPoint> {
+async fn recommend_request(client: &QdrantClient, section_condition: Option<Condition>, query: &str) -> Result<Vec<ScoredPoint>, HttpResponse> {
     let mut title_text_filter = get_title_text_filter(query);
     let mut body_text_filter = get_body_text_filter(query);
     let mut title_filter = get_title_filter();
@@ -215,10 +221,10 @@ async fn recommend_request(client: &QdrantClient, section_condition: Option<Cond
     ).await {
         Ok(response) => {
             log::debug!("Recommend Qdrant time: {:?}", response.time);
-            merge_results(response.result)
+            Ok(merge_results(response.result))
         }
         Err(_) => { // TODO: distinguish between 404 and other errors
-            vec![]
+            Ok(vec![])
         }
     }
 }
@@ -256,6 +262,22 @@ async fn search_request(client: &QdrantClient, section_condition: Option<Conditi
     }
 }
 
+async fn search_or_recommend(
+    client: &QdrantClient,
+    tokenizer: &BertTokenizer,
+    session: &Session,
+    section_condition: Option<Condition>,
+    query: &str,
+    do_recommend: bool,
+) -> Result<Vec<ScoredPoint>, HttpResponse> {
+    if do_recommend {
+        recommend_request(client, section_condition, query).await
+    } else {
+        let vector = get_embedding(tokenizer, session, query);
+        search_request(client, section_condition, query, vector).await
+    }
+}
+
 #[get("/api/search")]
 async fn query_handler(
     context: Data<(BertTokenizer, Session, QdrantClient)>,
@@ -278,36 +300,45 @@ async fn query_handler(
         ))
     };
 
-    let reco_start = Instant::now();
+    let mut query_stream = vec![];
 
-    let mut points = if q.len() < 5 {
-        recommend_request(qdrant, section_condition.clone(), &q).await
-    } else {
-        Vec::new()
-    };
+    if q.len() < 5 {
+        query_stream.push(search_or_recommend(
+            qdrant,
+            tokenizer,
+            session,
+            section_condition.clone(),
+            &q,
+            true,
+        ));
+    }
 
-    log::debug!("Recommendation time: {:?}", reco_start.elapsed());
+    query_stream.push(
+        search_or_recommend(
+            qdrant,
+            tokenizer,
+            session,
+            section_condition.clone(),
+            &q,
+            false,
+        )
+    );
 
-    if points.is_empty() {
-        let embedding_start = Instant::now();
+    let mut search_stream = futures::stream::iter(query_stream).buffer_unordered(2);
 
-        let vector = get_embedding(tokenizer, session, &q);
-
-        log::debug!("Embedding time: {:?}", embedding_start.elapsed());
-
-        let search_start = Instant::now();
-
-        let res = match search_request(qdrant, section_condition, &q, vector).await
-        {
-            Ok(search_response) => points = search_response,
-            Err(e) => return e,
-        };
-
-        log::debug!("Search time: {:?}", search_start.elapsed());
-
-        res
-    };
-
+    let mut points = vec![];
+    while let Some(result) = search_stream.next().await {
+        log::debug!("response in {:?}", time_start.elapsed());
+        match result {
+            Ok(response) => {
+                if !response.is_empty() {
+                    points.extend(response);
+                    break;
+                }
+            }
+            Err(err) => return err,
+        }
+    }
 
     // Postprocess search results
     let response_items: Vec<_> = points
