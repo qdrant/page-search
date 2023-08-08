@@ -1,6 +1,6 @@
 # Speedy Semantic Search
 
-This project has two implementations, one in Python and one in Rust. See [dev-docs.md](https://github.com/qdrant/page-search/blob/master/dev-docs.md) for an overview over the Python version and tools, and the [rust_search README](https://github.com/qdrant/page-search/tree/master/rust_search) for one on the Rust version and helpers.
+This project has two implementations, one in Python and one in Rust. See [dev-docs.md](./dev-docs.md) for an overview over the Python version and tools, and the [rust_search README](./rust_search) for one on the Rust version and helpers.
 
 Both the python and Rust version contain a service that is able to use a Qdrant vector search engine to do a semantic search in the matter of milliseconds. The python version does a text search below 4 characters, while the Rust version always does a full semantic search.
 
