@@ -1,20 +1,22 @@
 mod common;
 
+use crate::common::{get_embedding, get_qdrant_url, PREFIX_COLLECTION_NAME};
 use anyhow::Result;
+use itertools::Itertools;
 use ort::{Environment, SessionBuilder};
 use qdrant_client::prelude::*;
-use qdrant_client::qdrant::{vectors_config::Config, PointId, PointStruct, VectorParams, Vectors, VectorsConfig, OptimizersConfigDiff};
+use qdrant_client::qdrant::{
+    vectors_config::Config, OptimizersConfigDiff, PointId, PointStruct, VectorParams, Vectors,
+    VectorsConfig,
+};
 use rust_tokenizers::tokenizer::BertTokenizer;
 use std::collections::{HashMap, HashSet};
 use std::{io::Write, sync::Arc};
 use tokio::main;
-use itertools::Itertools;
-use crate::common::{get_embedding, get_qdrant_url, PREFIX_COLLECTION_NAME};
 
 const MODEL_PATH: &str = "all-MiniLM-L6-v2.onnx";
 const VOCAB_PATH: &str = "vocab.txt";
 const SPECIAL_TOKEN_PATH: &str = "special_tokens_map.json";
-
 
 fn prefix_to_id(prefix: &str) -> PointId {
     let len = prefix.len();
@@ -55,7 +57,7 @@ async fn main() -> Result<()> {
         false,
         SPECIAL_TOKEN_PATH,
     )
-        .unwrap();
+    .unwrap();
     let env = Arc::new(Environment::builder().build()?);
     let session = SessionBuilder::new(&env)?.with_model_from_file(MODEL_PATH)?;
     let id = &mut 1_u64;
@@ -69,7 +71,9 @@ async fn main() -> Result<()> {
             write!(stdout, ".").unwrap();
         }
         stdout.flush().unwrap();
-        let payload = vec![("prefix".to_string(), prefix.into())].into_iter().collect::<HashMap<_, Value>>();
+        let payload = vec![("prefix".to_string(), prefix.into())]
+            .into_iter()
+            .collect::<HashMap<_, Value>>();
 
         PointStruct {
             id: Some(prefix_to_id(prefix)),

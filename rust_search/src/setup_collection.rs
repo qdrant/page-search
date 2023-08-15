@@ -1,5 +1,6 @@
 mod common;
 
+use crate::common::{get_embedding, get_qdrant_url, COLLECTION_NAME, MODEL_PATH};
 use anyhow::Result;
 use ort::{Environment, SessionBuilder};
 use qdrant_client::prelude::*;
@@ -14,7 +15,6 @@ use std::{
     sync::Arc,
 };
 use tokio::main;
-use crate::common::{COLLECTION_NAME, get_embedding, get_qdrant_url, MODEL_PATH};
 
 const SITE_DATA: &str = "../page-search/data/abstracts.jsonl";
 const VOCAB_PATH: &str = "vocab.txt";
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         false,
         SPECIAL_TOKEN_PATH,
     )
-        .unwrap();
+    .unwrap();
     let env = Arc::new(Environment::builder().build()?);
     let session = SessionBuilder::new(&env)?.with_model_from_file(MODEL_PATH)?;
     let id = &mut 1_u64;

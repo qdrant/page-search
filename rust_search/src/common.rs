@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use ndarray::{Array, Axis, CowArray};
-use ort::Session;
 use ort::tensor::OrtOwnedTensor;
+use ort::Session;
 use ort::Value as OrtValue;
 
 use rust_tokenizers::tokenizer::{BertTokenizer, Tokenizer, TruncationStrategy};
@@ -18,7 +18,7 @@ pub fn get_qdrant_url() -> String {
         Err(_) => match std::env::var("QDRANT_HOST") {
             Ok(host) => format!("https://{}:6334", host),
             Err(_) => "http://localhost:6334".to_string(),
-        }
+        },
     }
 }
 
