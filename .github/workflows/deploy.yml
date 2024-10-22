@@ -26,6 +26,7 @@ jobs:
         docker build -t qdrant/site-search:${{ github.sha }} .
         cd $GITHUB_WORKSPACE
         docker save -o qdrant-site-search.tar qdrant/site-search:${{ github.sha }}
+        chmod 777 qdrant-site-search.tar
         ls -al .
     
     - name: copy data with ssh
