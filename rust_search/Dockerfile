@@ -30,7 +30,7 @@ RUN mv target/release/service /service/service
 
 RUN mv target/release/libonnxruntime* /service/
 
-FROM debian:11-slim
+FROM debian:12-slim
 ARG APP=/service
 
 RUN apt-get update \
