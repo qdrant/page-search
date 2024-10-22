@@ -1,9 +1,12 @@
 mod common;
 
-use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 
+use crate::common::{
+    get_embedding, get_qdrant_url, COLLECTION_NAME, MODEL_PATH, PREFIX_COLLECTION_NAME,
+};
 use actix_cors::Cors;
 use actix_web::{
     get,
@@ -14,23 +17,22 @@ use actix_web::{
 };
 use futures::StreamExt;
 use ort::{Environment, Session, SessionBuilder};
-use qdrant_client::{
-    prelude::*,
-    qdrant::{r#match::MatchValue, value::Kind, Condition,
-             Filter, PointId, RecommendPoints,
-    },
-};
+use qdrant_client::config::QdrantConfig;
 use qdrant_client::prelude::point_id::PointIdOptions;
-use qdrant_client::qdrant::{BatchResult, LookupLocation, RecommendBatchPoints, ScoredPoint, SearchBatchPoints};
+use qdrant_client::qdrant::r#match::MatchValue;
+use qdrant_client::qdrant::value::Kind;
+use qdrant_client::qdrant::{
+    BatchResult, Condition, Filter, LookupLocationBuilder, PointId, RecommendBatchPoints,
+    RecommendPoints, ScoredPoint, SearchBatchPoints, SearchPoints, Value,
+};
+use qdrant_client::Qdrant;
 use rust_tokenizers::tokenizer::BertTokenizer;
 use serde::{Deserialize, Serialize};
-use crate::common::{COLLECTION_NAME, get_embedding, get_qdrant_url, MODEL_PATH, PREFIX_COLLECTION_NAME};
 
 const VOCAB_PATH: &str = "vocab.txt";
 const SPECIAL_TOKEN_PATH: &str = "special_tokens_map.json";
 const SEARCH_LIMIT: u64 = 5;
 const TEXT_LIMIT: usize = 80;
-
 
 /// Postprocess search response
 ///
@@ -47,9 +49,7 @@ fn post_process_response_text(text: &str, query: &str) -> String {
     let pattern = format!(r"(^|\W)({})(.*)", escaped_query);
 
     let mut regex_builder = regex::RegexBuilder::new(&pattern);
-    regex_builder
-        .case_insensitive(true)
-        .unicode(true);
+    regex_builder.case_insensitive(true).unicode(true);
 
     let re = regex_builder.build().expect("Failed to compile regex");
 
@@ -113,10 +113,7 @@ fn get_list_of_title_tags() -> Vec<String> {
 }
 
 fn get_list_of_body_tags() -> Vec<String> {
-    vec![
-        "p".to_string(),
-        "li".to_string(),
-    ]
+    vec!["p".to_string(), "li".to_string()]
 }
 
 fn get_title_text_filter(query: &str) -> Vec<Condition> {
@@ -134,28 +131,28 @@ fn get_body_text_filter(query: &str) -> Vec<Condition> {
 }
 
 fn get_title_filter() -> Vec<Condition> {
-    vec![
-        Condition::matches("tag", get_list_of_title_tags()),
-    ]
+    vec![Condition::matches("tag", get_list_of_title_tags())]
 }
 
-
-fn get_recommend_request(query: &str, conditions: impl IntoIterator<Item=Condition>) -> RecommendPoints {
+fn get_recommend_request(
+    query: &str,
+    conditions: impl IntoIterator<Item = Condition>,
+) -> RecommendPoints {
     RecommendPoints {
         collection_name: COLLECTION_NAME.to_string(),
         positive: vec![prefix_to_id(query)],
         filter: Some(Filter::must(conditions)),
         limit: SEARCH_LIMIT,
         with_payload: Some(true.into()),
-        lookup_from: Some(LookupLocation {
-            collection_name: PREFIX_COLLECTION_NAME.to_string(),
-            vector_name: None,
-        }),
+        lookup_from: Some(LookupLocationBuilder::new(PREFIX_COLLECTION_NAME).build()),
         ..Default::default()
     }
 }
 
-fn get_search_request(vector: &[f32], conditions: impl IntoIterator<Item=Condition>) -> SearchPoints {
+fn get_search_request(
+    vector: &[f32],
+    conditions: impl IntoIterator<Item = Condition>,
+) -> SearchPoints {
     SearchPoints {
         collection_name: COLLECTION_NAME.to_string(),
         vector: vector.to_vec(),
@@ -194,7 +191,11 @@ fn merge_results(results: Vec<BatchResult>) -> Vec<ScoredPoint> {
     res.into_iter().take(SEARCH_LIMIT as usize).collect()
 }
 
-async fn recommend_request(client: &QdrantClient, section_condition: Option<Condition>, query: &str) -> Result<Vec<ScoredPoint>, HttpResponse> {
+async fn recommend_request(
+    client: &Qdrant,
+    section_condition: Option<Condition>,
+    query: &str,
+) -> Result<Vec<ScoredPoint>, HttpResponse> {
     let mut title_text_filter = get_title_text_filter(query);
     let mut body_text_filter = get_body_text_filter(query);
     let mut title_filter = get_title_filter();
@@ -207,8 +208,8 @@ async fn recommend_request(client: &QdrantClient, section_condition: Option<Cond
         no_text_filter.push(section_condition);
     }
 
-    match client.recommend_batch(
-        &RecommendBatchPoints {
+    match client
+        .recommend_batch(RecommendBatchPoints {
             collection_name: COLLECTION_NAME.to_string(),
             recommend_points: vec![
                 get_recommend_request(query, title_text_filter),
@@ -217,19 +218,27 @@ async fn recommend_request(client: &QdrantClient, section_condition: Option<Cond
                 get_recommend_request(query, no_text_filter),
             ],
             read_consistency: None,
-        }
-    ).await {
+            ..Default::default()
+        })
+        .await
+    {
         Ok(response) => {
             log::debug!("Recommend Qdrant time: {:?}", response.time);
             Ok(merge_results(response.result))
         }
-        Err(_) => { // TODO: distinguish between 404 and other errors
+        Err(_) => {
+            // TODO: distinguish between 404 and other errors
             Ok(vec![])
         }
     }
 }
 
-async fn search_request(client: &QdrantClient, section_condition: Option<Condition>, query: &str, vector: Vec<f32>) -> Result<Vec<ScoredPoint>, HttpResponse> {
+async fn search_request(
+    client: &Qdrant,
+    section_condition: Option<Condition>,
+    query: &str,
+    vector: Vec<f32>,
+) -> Result<Vec<ScoredPoint>, HttpResponse> {
     let mut title_text_filter = get_title_text_filter(query);
     let mut body_text_filter = get_body_text_filter(query);
     let mut title_filter = get_title_filter();
@@ -242,8 +251,8 @@ async fn search_request(client: &QdrantClient, section_condition: Option<Conditi
         no_text_filter.push(section_condition);
     }
 
-    match client.search_batch_points(
-        &SearchBatchPoints {
+    match client
+        .search_batch_points(SearchBatchPoints {
             collection_name: COLLECTION_NAME.to_string(),
             search_points: vec![
                 get_search_request(&vector, title_text_filter),
@@ -252,18 +261,20 @@ async fn search_request(client: &QdrantClient, section_condition: Option<Conditi
                 get_search_request(&vector, no_text_filter),
             ],
             read_consistency: None,
-        }
-    ).await {
+            ..Default::default()
+        })
+        .await
+    {
         Ok(response) => {
             log::debug!("Search Qdrant time: {:?}", response.time);
             Ok(merge_results(response.result))
         }
-        Err(e) => Err(HttpResponse::InternalServerError().body(e.to_string()))
+        Err(e) => Err(HttpResponse::InternalServerError().body(e.to_string())),
     }
 }
 
 async fn search_or_recommend(
-    client: &QdrantClient,
+    client: &Qdrant,
     tokenizer: &BertTokenizer,
     session: &Session,
     section_condition: Option<Condition>,
@@ -280,7 +291,7 @@ async fn search_or_recommend(
 
 #[get("/api/search")]
 async fn query_handler(
-    context: Data<(BertTokenizer, Session, QdrantClient)>,
+    context: Data<(BertTokenizer, Session, Qdrant)>,
     search: Query<Search>,
 ) -> HttpResponse {
     let time_start = Instant::now();
@@ -313,16 +324,14 @@ async fn query_handler(
         ));
     }
 
-    query_stream.push(
-        search_or_recommend(
-            qdrant,
-            tokenizer,
-            session,
-            section_condition.clone(),
-            &q,
-            false,
-        )
-    );
+    query_stream.push(search_or_recommend(
+        qdrant,
+        tokenizer,
+        session,
+        section_condition.clone(),
+        &q,
+        false,
+    ));
 
     let mut search_stream = futures::stream::iter(query_stream).buffer_unordered(2);
 
@@ -344,7 +353,9 @@ async fn query_handler(
     let response_items: Vec<_> = points
         .into_iter()
         .map(|point| {
-            let highlight = if let Some(Kind::StringValue(text)) = &point.payload.get("text").and_then(|v| v.kind.as_ref()) {
+            let highlight = if let Some(Kind::StringValue(text)) =
+                &point.payload.get("text").and_then(|v| v.kind.as_ref())
+            {
                 post_process_response_text(text, &q)
             } else {
                 "".to_string()
@@ -354,17 +365,16 @@ async fn query_handler(
                 payload: point.payload,
                 highlight,
             }
-        }).collect();
+        })
+        .collect();
 
-    HttpResponse::Ok()
-        .insert_header(ContentType::json())
-        .body(
-            serde_json::to_string(&Response {
-                result: response_items,
-                time: time_start.elapsed().as_micros() as f64 / 1_000_000.0,
-            })
-                .expect("Failed to serialize response"),
-        )
+    HttpResponse::Ok().insert_header(ContentType::json()).body(
+        serde_json::to_string(&Response {
+            result: response_items,
+            time: time_start.elapsed().as_micros() as f64 / 1_000_000.0,
+        })
+        .expect("Failed to serialize response"),
+    )
 }
 
 #[main]
@@ -383,17 +393,17 @@ async fn main() -> std::io::Result<()> {
         false,
         SPECIAL_TOKEN_PATH,
     )
-        .unwrap();
+    .unwrap();
     let env = Arc::new(Environment::builder().build().unwrap());
     let session = SessionBuilder::new(&env)
         .unwrap()
         .with_model_from_file(MODEL_PATH)
         .unwrap();
-    let mut config = QdrantClientConfig::from_url(&qdrant_url);
+    let mut config = QdrantConfig::from_url(&qdrant_url);
     if let Ok(key) = &api_key {
         config.set_api_key(key);
     }
-    let qdrant = QdrantClient::new(Some(config)).unwrap();
+    let qdrant = Qdrant::new(config).unwrap();
     qdrant.health_check().await.unwrap();
     let context = Data::new((tokenizer, session, qdrant));
     let server = HttpServer::new(move || {

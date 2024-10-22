@@ -13,7 +13,7 @@ beautifulsoup4 = "^4.11.1"
 tqdm = "^4.64.0"
 sentence-transformers = "^2.2.2"
 fastapi = "^0.79.1"
-qdrant-client = "0.10.2"
+qdrant-client = "^1.12.0"
 scipy = "1.9.0"
 python-dotenv = "^0.21.0"
 blingfire = "^0.1.8"
@@ -35,7 +35,6 @@ torch = [
     {url="https://download.pytorch.org/whl/cpu/torch-1.12.1%2Bcpu-cp310-cp310-linux_x86_64.whl", markers = "python_version == '3.10' and sys_platform == 'linux' and platform_machine == 'x86_64'"},
     {url="https://download.pytorch.org/whl/cpu/torch-1.12.1-cp310-none-macosx_10_9_x86_64.whl", markers = "python_version == '3.10' and sys_platform == 'darwin' and platform_machine == 'x86_64'"},
     {url="https://download.pytorch.org/whl/cpu/torch-1.12.1-cp310-none-macosx_11_0_arm64.whl", markers = "python_version == '3.10' and sys_platform == 'darwin' and platform_machine == 'arm64'"}
-
 ]
 fastapi-utils = "^0.2.1"
 

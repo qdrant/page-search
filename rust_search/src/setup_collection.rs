@@ -1,10 +1,14 @@
 mod common;
 
+use crate::common::{get_embedding, get_qdrant_url, COLLECTION_NAME, MODEL_PATH};
 use anyhow::Result;
 use ort::{Environment, SessionBuilder};
-use qdrant_client::prelude::*;
-use qdrant_client::qdrant::{
-    vectors_config::Config, PointId, PointStruct, VectorParams, Vectors, VectorsConfig,
+use qdrant_client::{
+    config::QdrantConfig,
+    qdrant::{
+        vectors_config::Config, CreateCollection, Distance, PointId, PointStruct, UpsertPointsBuilder, Value, VectorParams, Vectors, VectorsConfig
+    },
+    Qdrant,
 };
 use rust_tokenizers::tokenizer::BertTokenizer;
 use std::{
@@ -14,7 +18,6 @@ use std::{
     sync::Arc,
 };
 use tokio::main;
-use crate::common::{COLLECTION_NAME, get_embedding, get_qdrant_url, MODEL_PATH};
 
 const SITE_DATA: &str = "../page-search/data/abstracts.jsonl";
 const VOCAB_PATH: &str = "vocab.txt";
@@ -29,7 +32,7 @@ async fn main() -> Result<()> {
         false,
         SPECIAL_TOKEN_PATH,
     )
-        .unwrap();
+    .unwrap();
     let env = Arc::new(Environment::builder().build()?);
     let session = SessionBuilder::new(&env)?.with_model_from_file(MODEL_PATH)?;
     let id = &mut 1_u64;
@@ -58,15 +61,15 @@ async fn main() -> Result<()> {
 
     // store the word prefixes with embedding
     let qdrant_url = get_qdrant_url();
-    let mut config = QdrantClientConfig::from_url(&qdrant_url);
+    let mut config = QdrantConfig::from_url(&qdrant_url);
     if let Ok(key) = std::env::var("QDRANT_API_KEY") {
         config.set_api_key(&key);
     }
-    let qdrant_client = QdrantClient::new(Some(config))?;
+    let qdrant_client = Qdrant::new(config)?;
 
-    if !qdrant_client.has_collection(COLLECTION_NAME).await? {
+    if !qdrant_client.collection_exists(COLLECTION_NAME).await? {
         qdrant_client
-            .create_collection(&CreateCollection {
+            .create_collection(CreateCollection {
                 collection_name: COLLECTION_NAME.into(),
                 vectors_config: Some(VectorsConfig {
                     config: Some(Config::Params(VectorParams {
@@ -84,9 +87,9 @@ async fn main() -> Result<()> {
         if p.is_empty() {
             break;
         }
-        qdrant_client
-            .upsert_points(COLLECTION_NAME, p, None)
-            .await?;
+        let request = UpsertPointsBuilder::new(COLLECTION_NAME, p);
+
+        qdrant_client.upsert_points(request).await?;
     }
     Ok(())
 }
