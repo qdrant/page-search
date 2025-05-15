@@ -18,7 +18,7 @@ COPY poetry.lock pyproject.toml /code/
 
 # Project initialization:
 RUN poetry config virtualenvs.create false \
-  && poetry install --no-dev --no-interaction --no-ansi
+  && poetry install --without dev --no-interaction --no-ansi
 
 # Install pre-trained models here
 # Example:
