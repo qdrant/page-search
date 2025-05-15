@@ -1,5 +1,3 @@
-FROM node:current as builder
-
 FROM python:3.10-slim
 
 ENV PYTHONFAULTHANDLER=1 \
@@ -18,13 +16,14 @@ COPY poetry.lock pyproject.toml /code/
 
 # Project initialization:
 RUN poetry config virtualenvs.create false \
-  && poetry install --without dev --no-interaction --no-ansi
+  && poetry install --without dev --no-interaction --no-ansi --no-root
 
 # Install pre-trained models here
 # Example:
-RUN python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer("all-MiniLM-L6-v2")'
+  RUN python -c 'from fastembed import TextEmbedding; TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")'
+
 
 # Creating folders, and files for a project:
 COPY . /code
 
-CMD uvicorn site_search.service:app --host 0.0.0.0 --port 8005 --workers ${WORKERS:-1}
+CMD ["uvicorn", "site_search.service:app", "--host", "0.0.0.0", "--port", "8005", "--workers", "${WORKERS:-1}"]

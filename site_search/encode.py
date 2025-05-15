@@ -43,7 +43,7 @@ if __name__ == '__main__':
     qdrant_client.recreate_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(
-            size=encoder.model.get_sentence_embedding_dimension(),
+            size=encoder.get_model_dim(),
             distance=Distance.COSINE
         )
     )
