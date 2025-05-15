@@ -25,6 +25,7 @@ class PageAbstract:
     location: str
     sections: Optional[List[str]] = None
     titles: Optional[List[str]] = None
+    partition: Optional[str] = None
 
 
 def get_path_hierarchy(url: str) -> List[str]:
@@ -111,6 +112,15 @@ class Crawler:
 
         soup = BeautifulSoup(resp.content, 'html.parser')
 
+        # Try to find metatag with partition:
+        # Which might look like this:
+        # <meta name="partition" content="cloud">
+
+        partition = None
+        partition_tag = soup.find('meta', {'name': 'partition'})
+        if partition_tag:
+            partition = partition_tag.get('content')
+
         title = soup.find('title')
 
         titles = []
@@ -161,7 +171,8 @@ class Crawler:
                         tag=tag.name,
                         location=selector_soup(tag),
                         titles=titles + parent_headers,
-                        sections=sections
+                        sections=sections,
+                        partition=partition
                     ))
 
         return abstracts

@@ -79,6 +79,8 @@ struct Search {
     q: String,
     #[serde(default)]
     section: String,
+    #[serde(default)]
+    partition: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -194,6 +196,7 @@ fn merge_results(results: Vec<BatchResult>) -> Vec<ScoredPoint> {
 async fn recommend_request(
     client: &Qdrant,
     section_condition: Option<Condition>,
+    partition_condition: Option<Condition>,
     query: &str,
 ) -> Result<Vec<ScoredPoint>, HttpResponse> {
     let mut title_text_filter = get_title_text_filter(query);
@@ -206,6 +209,13 @@ async fn recommend_request(
         body_text_filter.push(section_condition.clone());
         title_filter.push(section_condition.clone());
         no_text_filter.push(section_condition);
+    }
+
+    if let Some(partition_condition) = partition_condition {
+        title_text_filter.push(partition_condition.clone());
+        body_text_filter.push(partition_condition.clone());
+        title_filter.push(partition_condition.clone());
+        no_text_filter.push(partition_condition);
     }
 
     match client
@@ -236,6 +246,7 @@ async fn recommend_request(
 async fn search_request(
     client: &Qdrant,
     section_condition: Option<Condition>,
+    partition_condition: Option<Condition>,
     query: &str,
     vector: Vec<f32>,
 ) -> Result<Vec<ScoredPoint>, HttpResponse> {
@@ -249,6 +260,13 @@ async fn search_request(
         body_text_filter.push(section_condition.clone());
         title_filter.push(section_condition.clone());
         no_text_filter.push(section_condition);
+    }
+
+    if let Some(partition_condition) = partition_condition {
+        title_text_filter.push(partition_condition.clone());
+        body_text_filter.push(partition_condition.clone());
+        title_filter.push(partition_condition.clone());
+        no_text_filter.push(partition_condition);
     }
 
     match client
@@ -278,14 +296,15 @@ async fn search_or_recommend(
     tokenizer: &BertTokenizer,
     session: &Session,
     section_condition: Option<Condition>,
+    partition_condition: Option<Condition>,
     query: &str,
     do_recommend: bool,
 ) -> Result<Vec<ScoredPoint>, HttpResponse> {
     if do_recommend {
-        recommend_request(client, section_condition, query).await
+        recommend_request(client, section_condition, partition_condition, query).await
     } else {
         let vector = get_embedding(tokenizer, session, query);
-        search_request(client, section_condition, query, vector).await
+        search_request(client, section_condition, partition_condition, query, vector).await
     }
 }
 
@@ -296,7 +315,7 @@ async fn query_handler(
 ) -> HttpResponse {
     let time_start = Instant::now();
 
-    let Search { q, section } = search.into_inner();
+    let Search { q, section, partition } = search.into_inner();
 
     log::info!("Query: {}", q);
 
@@ -311,6 +330,12 @@ async fn query_handler(
         ))
     };
 
+    let partition_condition = if let Some(partition) = partition {
+        Some(Condition::matches("partition", MatchValue::Keyword(partition)))
+    } else {
+        None
+    };
+
     let mut query_stream = vec![];
 
     if q.len() < 5 {
@@ -319,6 +344,7 @@ async fn query_handler(
             tokenizer,
             session,
             section_condition.clone(),
+            partition_condition.clone(),
             &q,
             true,
         ));
@@ -329,6 +355,7 @@ async fn query_handler(
         tokenizer,
         session,
         section_condition.clone(),
+        partition_condition.clone(),
         &q,
         false,
     ));
