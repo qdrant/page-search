@@ -4,8 +4,8 @@ from typing import Iterable
 
 import tqdm
 from blingfire import text_to_sentences
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType
+from qdrant_client import QdrantClient, models
+from qdrant_client.models import Distance, VectorParams
 
 from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY
 from site_search.neural_searcher import NeuralSearcher
@@ -37,50 +37,68 @@ def read_text_records(filename: str, reader=read_records) -> Iterable[str]:
 
 
 if __name__ == '__main__':
-    qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY,
-                                 prefer_grpc=True)
+    qdrant_client = QdrantClient(
+        host=QDRANT_HOST,
+        port=QDRANT_PORT,
+        api_key=QDRANT_API_KEY,
+        prefer_grpc=False,
+        timeout=600,
+        cloud_inference=True
+    )
 
-    qdrant_client.recreate_collection(
+    qdrant_client.delete_collection(COLLECTION_NAME)
+
+    qdrant_client.create_collection(
         collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=encoder.get_model_dim(),
-            distance=Distance.COSINE
-        )
+        vectors_config={
+            "dense": VectorParams(
+                size=encoder.get_model_dim(),
+                distance=Distance.COSINE
+            )
+        },
+        sparse_vectors_config={
+            "sparse": models.SparseVectorParams(
+                index=models.SparseIndexParams(
+                    on_disk=True
+                ),
+                modifier=models.Modifier.IDF,
+            )
+        }
     )
 
     records_path = os.path.join(DATA_DIR, 'abstracts.jsonl')
     records_reader = read_sentence_records
 
     payloads = records_reader(records_path)
-    vectors = encoder.encode_iter(tqdm.tqdm(read_text_records(records_path, reader=records_reader)))
+    vectors = tqdm.tqdm(encoder.encode_iter(read_text_records(records_path, reader=records_reader)))
 
     index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,
         field_name='sections',
-        field_schema=PayloadSchemaType.KEYWORD,
+        field_schema=models.PayloadSchemaType.KEYWORD,
         wait=True
     )
 
     tags_index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,
         field_name='tag',
-        field_schema=PayloadSchemaType.KEYWORD,
+        field_schema=models.PayloadSchemaType.KEYWORD,
         wait=True
     )
 
     partition_index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,
         field_name='partition',
-        field_schema=PayloadSchemaType.KEYWORD,
+        field_schema=models.PayloadSchemaType.KEYWORD,
         wait=True
     )
 
     text_index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,
         field_name='text',
-        field_schema=TextIndexParams(
+        field_schema=models.TextIndexParams(
             type="text",
-            tokenizer=TokenizerType.PREFIX,
+            tokenizer=models.TokenizerType.PREFIX,
             min_token_len=1,
             max_token_len=20,
             lowercase=True,

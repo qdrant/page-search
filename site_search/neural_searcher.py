@@ -1,7 +1,9 @@
 from typing import List, Iterable
 
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.models import Filter
+
+from itertools import tee
 
 from fastembed import TextEmbedding
 
@@ -48,8 +50,18 @@ class NeuralSearcher:
         return payloads
 
     def encode_iter(self, texts: Iterable[str]) -> Iterable[list]:
-        for vector in self.model.embed(texts, parallel=4):
-            yield vector.tolist()
+
+        # tie text to sparse vector
+        texts, texts_iter = tee(texts)
+
+        for (text, vector) in zip(texts_iter, self.model.embed(texts, parallel=4)):
+            yield {
+                "dense": vector.tolist(),
+                "sparse": models.Document(
+                    text=text,
+                    model="bm25"
+                )
+            }
 
     def get_model_dim(self) -> int:
         return self.model._get_model_description(NEURAL_ENCODER).dim
