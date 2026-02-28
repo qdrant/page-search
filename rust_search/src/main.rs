@@ -17,13 +17,12 @@ use actix_web::{
 };
 use futures::StreamExt;
 use ort::{Environment, Session, SessionBuilder};
-use qdrant_client::config::QdrantConfig;
-use qdrant_client::prelude::point_id::PointIdOptions;
+use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::{
-    BatchResult, Condition, Filter, LookupLocationBuilder, PointId, RecommendBatchPoints,
-    RecommendPoints, ScoredPoint, SearchBatchPoints, SearchPoints, Value,
+    BatchResult, Condition, Filter, LookupLocationBuilder, PointId, QueryBatchPointsBuilder,
+    QueryPoints, QueryPointsBuilder, RecommendInput, ScoredPoint, Value,
 };
 use qdrant_client::Qdrant;
 use rust_tokenizers::tokenizer::BertTokenizer;
@@ -136,33 +135,32 @@ fn get_title_filter() -> Vec<Condition> {
     vec![Condition::matches("tag", get_list_of_title_tags())]
 }
 
-fn get_recommend_request(
+fn get_recommend_query(
     query: &str,
     conditions: impl IntoIterator<Item = Condition>,
-) -> RecommendPoints {
-    RecommendPoints {
-        collection_name: COLLECTION_NAME.to_string(),
-        positive: vec![prefix_to_id(query)],
-        filter: Some(Filter::must(conditions)),
-        limit: SEARCH_LIMIT,
-        with_payload: Some(true.into()),
-        lookup_from: Some(LookupLocationBuilder::new(PREFIX_COLLECTION_NAME).build()),
-        ..Default::default()
-    }
+) -> QueryPoints {
+    QueryPointsBuilder::new(COLLECTION_NAME)
+        .query(RecommendInput {
+            positive: vec![prefix_to_id(query).into()],
+            ..Default::default()
+        })
+        .filter(Filter::must(conditions))
+        .limit(SEARCH_LIMIT)
+        .with_payload(true)
+        .lookup_from(LookupLocationBuilder::new(PREFIX_COLLECTION_NAME).build())
+        .build()
 }
 
-fn get_search_request(
+fn get_search_query(
     vector: &[f32],
     conditions: impl IntoIterator<Item = Condition>,
-) -> SearchPoints {
-    SearchPoints {
-        collection_name: COLLECTION_NAME.to_string(),
-        vector: vector.to_vec(),
-        filter: Some(Filter::must(conditions)),
-        limit: SEARCH_LIMIT,
-        with_payload: Some(true.into()),
-        ..Default::default()
-    }
+) -> QueryPoints {
+    QueryPointsBuilder::new(COLLECTION_NAME)
+        .query(vector.to_vec())
+        .filter(Filter::must(conditions))
+        .limit(SEARCH_LIMIT)
+        .with_payload(true)
+        .build()
 }
 
 fn point_id_to_hash(id: PointId) -> String {
@@ -219,17 +217,15 @@ async fn recommend_request(
     }
 
     match client
-        .recommend_batch(RecommendBatchPoints {
-            collection_name: COLLECTION_NAME.to_string(),
-            recommend_points: vec![
-                get_recommend_request(query, title_text_filter),
-                get_recommend_request(query, body_text_filter),
-                get_recommend_request(query, title_filter),
-                get_recommend_request(query, no_text_filter),
+        .query_batch(QueryBatchPointsBuilder::new(
+            COLLECTION_NAME,
+            vec![
+                get_recommend_query(query, title_text_filter),
+                get_recommend_query(query, body_text_filter),
+                get_recommend_query(query, title_filter),
+                get_recommend_query(query, no_text_filter),
             ],
-            read_consistency: None,
-            ..Default::default()
-        })
+        ))
         .await
     {
         Ok(response) => {
@@ -270,17 +266,15 @@ async fn search_request(
     }
 
     match client
-        .search_batch_points(SearchBatchPoints {
-            collection_name: COLLECTION_NAME.to_string(),
-            search_points: vec![
-                get_search_request(&vector, title_text_filter),
-                get_search_request(&vector, body_text_filter),
-                get_search_request(&vector, title_filter),
-                get_search_request(&vector, no_text_filter),
+        .query_batch(QueryBatchPointsBuilder::new(
+            COLLECTION_NAME,
+            vec![
+                get_search_query(&vector, title_text_filter),
+                get_search_query(&vector, body_text_filter),
+                get_search_query(&vector, title_filter),
+                get_search_query(&vector, no_text_filter),
             ],
-            read_consistency: None,
-            ..Default::default()
-        })
+        ))
         .await
     {
         Ok(response) => {
@@ -304,7 +298,14 @@ async fn search_or_recommend(
         recommend_request(client, section_condition, partition_condition, query).await
     } else {
         let vector = get_embedding(tokenizer, session, query);
-        search_request(client, section_condition, partition_condition, query, vector).await
+        search_request(
+            client,
+            section_condition,
+            partition_condition,
+            query,
+            vector,
+        )
+        .await
     }
 }
 
@@ -315,7 +316,11 @@ async fn query_handler(
 ) -> HttpResponse {
     let time_start = Instant::now();
 
-    let Search { q, section, partition } = search.into_inner();
+    let Search {
+        q,
+        section,
+        partition,
+    } = search.into_inner();
 
     log::info!("Query: {}", q);
 
@@ -330,11 +335,8 @@ async fn query_handler(
         ))
     };
 
-    let partition_condition = if let Some(partition) = partition {
-        Some(Condition::matches("partition", MatchValue::Keyword(partition)))
-    } else {
-        None
-    };
+    let partition_condition =
+        partition.map(|partition| Condition::matches("partition", MatchValue::Keyword(partition)));
 
     let mut query_stream = vec![];
 
@@ -426,11 +428,11 @@ async fn main() -> std::io::Result<()> {
         .unwrap()
         .with_model_from_file(MODEL_PATH)
         .unwrap();
-    let mut config = QdrantConfig::from_url(&qdrant_url);
+    let mut builder = Qdrant::from_url(&qdrant_url);
     if let Ok(key) = &api_key {
-        config.set_api_key(key);
+        builder = builder.api_key(key.clone());
     }
-    let qdrant = Qdrant::new(config).unwrap();
+    let qdrant = builder.build().unwrap();
     qdrant.health_check().await.unwrap();
     let context = Data::new((tokenizer, session, qdrant));
     let server = HttpServer::new(move || {

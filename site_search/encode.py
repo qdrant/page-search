@@ -5,7 +5,7 @@ from typing import Iterable
 import tqdm
 from blingfire import text_to_sentences
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType
+from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType, PointStruct
 
 from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY
 from site_search.neural_searcher import NeuralSearcher
@@ -40,7 +40,10 @@ if __name__ == '__main__':
     qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY,
                                  prefer_grpc=True)
 
-    qdrant_client.recreate_collection(
+    if qdrant_client.collection_exists(COLLECTION_NAME):
+        qdrant_client.delete_collection(COLLECTION_NAME)
+
+    qdrant_client.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(
             size=encoder.get_model_dim(),
@@ -88,11 +91,13 @@ if __name__ == '__main__':
         wait=True
     )
 
-    qdrant_client.upload_collection(
+    def make_points(vectors_iter, payloads_iter):
+        for vector, payload in zip(vectors_iter, payloads_iter):
+            yield PointStruct(vector=vector, payload=payload)
+
+    qdrant_client.upload_points(
         collection_name=COLLECTION_NAME,
-        vectors=vectors,
-        payload=payloads,
-        ids=None,
+        points=make_points(vectors, payloads),
         batch_size=BATCH_SIZE,
         parallel=2
     )

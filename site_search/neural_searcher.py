@@ -31,10 +31,10 @@ class NeuralSearcher:
                                           prefer_grpc=True)
 
     def search(self, text: str, filter_: dict = None) -> List[dict]:
-        vector =next(iter(self.model.embed(text))).tolist()
-        search_result = self.qdrant_client.search(
+        vector = next(iter(self.model.embed(text))).tolist()
+        search_result = self.qdrant_client.query_points(
             collection_name=self.collection_name,
-            query_vector=vector,
+            query=vector,
             query_filter=Filter(**filter_) if filter_ else None,
             limit=SEARCH_LIMIT,
             with_payload=True,
@@ -44,7 +44,7 @@ class NeuralSearcher:
             "payload": hit.payload,
             "score": hit.score,
             "highlight": highlight_search_match(limit_text(hit.payload['text']), text),
-        } for hit in search_result]
+        } for hit in search_result.points]
         return payloads
 
     def encode_iter(self, texts: Iterable[str]) -> Iterable[list]:

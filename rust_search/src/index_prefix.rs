@@ -4,7 +4,6 @@ use crate::common::{get_embedding, get_qdrant_url, PREFIX_COLLECTION_NAME};
 use anyhow::Result;
 use itertools::Itertools;
 use ort::{Environment, SessionBuilder};
-use qdrant_client::config::QdrantConfig;
 use qdrant_client::qdrant::{
     vectors_config::Config, OptimizersConfigDiff, PointId, PointStruct, VectorParams, Vectors,
     VectorsConfig,
@@ -67,7 +66,7 @@ async fn main() -> Result<()> {
     let mut stdout = stdout.lock();
     let points = prefixes.into_iter().map(|prefix| {
         let vector = get_embedding(&tokenizer, &session, prefix);
-        if *id % 100 == 0 {
+        if (*id).is_multiple_of(100) {
             write!(stdout, "{id}").unwrap();
         } else {
             write!(stdout, ".").unwrap();
@@ -86,11 +85,11 @@ async fn main() -> Result<()> {
 
     // store the word prefixes with embedding
     let qdrant_url = get_qdrant_url();
-    let mut config = QdrantConfig::from_url(&qdrant_url);
+    let mut builder = Qdrant::from_url(&qdrant_url);
     if let Ok(key) = std::env::var("QDRANT_API_KEY") {
-        config.set_api_key(&key);
+        builder = builder.api_key(key);
     }
-    let qdrant_client = Qdrant::new(config)?;
+    let qdrant_client = builder.build()?;
 
     if !qdrant_client
         .collection_exists(PREFIX_COLLECTION_NAME)
