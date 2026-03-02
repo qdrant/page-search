@@ -92,8 +92,8 @@ if __name__ == '__main__':
     )
 
     def make_points(vectors_iter, payloads_iter):
-        for vector, payload in zip(vectors_iter, payloads_iter):
-            yield PointStruct(vector=vector, payload=payload)
+        for i, (vector, payload) in enumerate(zip(vectors_iter, payloads_iter)):
+            yield PointStruct(id=i, vector=vector, payload=payload)
 
     qdrant_client.upload_points(
         collection_name=COLLECTION_NAME,
