@@ -25,6 +25,13 @@ from site_search.config import (
 section_pattern = re.compile(r"\s{0,3}(#+)\s+(.*?)\s*#*\s*")
 
 
+def _slugify(title: str) -> str:
+    s = title.lower().strip()
+    s = re.sub(r"[\s\-_]+", "-", s)
+    s = re.sub(r"[^\w\-]+", "", s)
+    return s
+
+
 class Section(BaseModel):
     title: str
     content: str
@@ -88,7 +95,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
             section = Section(
                 title=title,
                 content=line,
-                url=url,
+                url=urljoin(url, "#" + _slugify(title)),
                 parents=parents,
                 level=level,
                 line=lnum,
@@ -164,7 +171,9 @@ def main():
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_parse_markdown, url) for url in urls]
 
-        for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(urls)):
+        for future in tqdm.tqdm(
+            concurrent.futures.as_completed(futures), total=len(urls)
+        ):
             result = future.result()
 
             if len(result.sections) == 0:
