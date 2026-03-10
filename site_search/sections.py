@@ -1,3 +1,4 @@
+from collections import namedtuple
 import concurrent.futures
 import hashlib
 import uuid
@@ -12,6 +13,8 @@ from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct, Document
+from markdown_it import MarkdownIt
+from markdown_it.tree import SyntaxTreeNode
 
 from site_search.config import (
     QDRANT_HOST,
@@ -65,60 +68,68 @@ class _ParsingResult(BaseModel):
     sections: list[Section]
 
 
+class _Heading(BaseModel):
+    tag: str
+    line: int
+    title: str
+
+    @property
+    def level(self) -> int:
+        return int(self.tag[-1])
+
+
 def _parse_markdown(url: str) -> _ParsingResult:
     resp = requests.get(urljoin(url, "index.md"))
     if not resp.ok:
         return _ParsingResult(sections=[], url=url)
 
-    lines = resp.text.splitlines()
+    document = resp.text
+    tokens = MarkdownIt("commonmark").parse(document)
+    root = SyntaxTreeNode(tokens)
+    headings: list[_Heading] = [
+        _Heading(tag=node.tag, line=node.map[0], title=node.children[0].content)  # ty:ignore[not-subscriptable]
+        for node in root.children
+        if node.type == "heading"
+    ]
+
+    if headings[0].line != 0:
+        headings.insert(0, _Heading(tag="h1", line=0, title=""))
+
+    lines = document.splitlines()
 
     # needs to be a dict because the first section does not have to be level 1
     last: dict[int, Section | None] = {}
 
     sections: list[Section] = []
 
-    for lnum, line in enumerate(lines):
-        if match := section_pattern.fullmatch(line):
-            level = len(match.group(1))
-            title = match.group(2)
+    for i, heading in enumerate(headings):
+        # higher level sections end here
+        for j in range(heading.level + 1, 6):
+            last[j] = None
 
-            # higher level sections end here
-            for i in range(level + 1, 6):
-                last[i] = None
+        # lower level sections are parents
+        parents: list[str] = []
+        for j in range(1, heading.level):
+            if (parent := last.get(j)) is not None:
+                parents.append(parent.title)
 
-            # lower level sections are parents
-            parents: list[str] = []
-            for i in range(1, level):
-                if (parent := last.get(i)) is not None:
-                    parents.append(parent.title)
-
-            section = Section(
-                title=title,
-                content=line,
-                url=urljoin(url, "#" + _slugify(title)),
-                parents=parents,
-                level=level,
-                line=lnum,
-            )
-
-            last[level] = section
-            sections.append(section)
+        # content should go from start of a section to the start of the next
+        if i < len(headings) - 1:
+            content = lines[heading.line : headings[i + 1].line]
         else:
-            # text before any heading
-            if len(sections) == 0:
-                sections.append(
-                    Section(
-                        title="",
-                        content="",
-                        url=url,
-                        parents=[],
-                        level=1,
-                        line=lnum,
-                    )
-                )
+            content = lines[heading.line :]
 
-            # append text to last section content
-            sections[-1].content += "\n" + line
+        section = Section(
+            title=heading.title,
+            content="\n".join(content),
+            url=urljoin(url, "#" + _slugify(heading.title)),
+            parents=parents,
+            level=heading.level,
+            line=heading.line,
+        )
+
+        last[heading.level] = section
+        sections.append(section)
 
     return _ParsingResult(sections=sections, url=url)
 
