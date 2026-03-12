@@ -35,11 +35,18 @@ def _slugify(title: str) -> str:
     return s
 
 
+class Parent(BaseModel):
+    title: str
+    slug: str
+    index: int
+
+
 class Section(BaseModel):
     title: str
+    slug: str
     content: str
     url: str
-    parents: list[str]
+    parents: list[Parent]
     level: int
     line: int
 
@@ -108,10 +115,10 @@ def _parse_markdown(url: str) -> _ParsingResult:
             last[j] = None
 
         # lower level sections are parents
-        parents: list[str] = []
+        parents: list[Parent] = []
         for j in range(1, heading.level):
             if (parent := last.get(j)) is not None:
-                parents.append(parent.title)
+                parents.append(Parent(title=parent.title, slug=parent.slug, index=j - 1))
 
         # content should go from start of a section to the start of the next
         if i < len(headings) - 1:
@@ -122,7 +129,8 @@ def _parse_markdown(url: str) -> _ParsingResult:
         section = Section(
             title=heading.title,
             content="\n".join(content),
-            url=urljoin(url, "#" + _slugify(heading.title)),
+            slug=_slugify(heading.title),
+            url=url,
             parents=parents,
             level=heading.level,
             line=heading.line,
