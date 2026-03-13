@@ -21,7 +21,7 @@ searcher = SectionSearcher()
 
 
 def _section_list_to_markdown(sections: list[Section]) -> str:
-    return "\n".join(section.content for section in sections)
+    return "\n".join(section.content + f"\n{section.url}#{section.slug}\n" for section in sections)
 
 
 @app.get("/{path:path}")
