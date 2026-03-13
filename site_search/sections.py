@@ -1,3 +1,4 @@
+from qdrant_client.models import PayloadSchemaType
 from collections import namedtuple
 import concurrent.futures
 import hashlib
@@ -182,6 +183,30 @@ def main():
             size=qdrant_client.get_embedding_size(NEURAL_ENCODER),
             distance=Distance.COSINE,
         ),
+    )
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name='title',
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True
+    )
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name='slug',
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True
+    )
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name='parents[].title',
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True
+    )
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name='parents[].slug',
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True
     )
 
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
