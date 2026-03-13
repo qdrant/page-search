@@ -1,41 +1,36 @@
-from qdrant_client.models import PayloadSchemaType
-from collections import namedtuple
-from loguru import logger
 import concurrent.futures
 import hashlib
-import uuid
 import re
+import uuid
 from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
+from markdown_it import MarkdownIt
+from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel
-from usp.fetch_parse import SitemapFetcher
-from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
-from usp.tree import sitemap_tree_for_homepage
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
     Distance,
-    VectorParams,
-    PointStruct,
     Document,
-    Filter,
     FieldCondition,
+    Filter,
     MatchValue,
+    PointStruct,
+    VectorParams,
 )
-from markdown_it import MarkdownIt
-from markdown_it.tree import SyntaxTreeNode
+from qdrant_client.models import PayloadSchemaType
+from usp.fetch_parse import SitemapFetcher
+from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
+from usp.tree import sitemap_tree_for_homepage
 
 from site_search.config import (
+    NEURAL_ENCODER,
+    QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
-    QDRANT_API_KEY,
-    NEURAL_ENCODER,
     SECTION_COLLECTION_NAME,
 )
-
-# https://spec.commonmark.org/0.31.2/#atx-heading
-section_pattern = re.compile(r"\s{0,3}(#+)\s+(.*?)\s*#*\s*")
 
 
 def _slugify(title: str) -> str:
