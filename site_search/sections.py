@@ -1,32 +1,36 @@
-from qdrant_client.models import PayloadSchemaType
-from collections import namedtuple
 import concurrent.futures
 import hashlib
-import uuid
 import re
+import uuid
 from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
+from markdown_it import MarkdownIt
+from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import (
+    Distance,
+    Document,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
+from qdrant_client.models import PayloadSchemaType
 from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, Document
-from markdown_it import MarkdownIt
-from markdown_it.tree import SyntaxTreeNode
 
 from site_search.config import (
+    NEURAL_ENCODER,
+    QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
-    QDRANT_API_KEY,
-    NEURAL_ENCODER,
     SECTION_COLLECTION_NAME,
 )
-
-# https://spec.commonmark.org/0.31.2/#atx-heading
-section_pattern = re.compile(r"\s{0,3}(#+)\s+(.*?)\s*#*\s*")
 
 
 def _slugify(title: str) -> str:
@@ -167,6 +171,42 @@ def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
         all_pages = index_sitemap.all_pages()
 
     return [urljoin(url, p.url) for p in all_pages]
+
+
+class SectionSearcher:
+    def __init__(self):
+        self.client: QdrantClient
+        self.client = QdrantClient(
+            host=QDRANT_HOST,
+            port=QDRANT_PORT,
+            api_key=QDRANT_API_KEY,
+            prefer_grpc=True,
+            local_inference_batch_size=32,
+        )
+
+    def search(self, query: str | None, path: str) -> list[Section]:
+        conditions = [
+            FieldCondition(key=f"parents[{i}].title", match=MatchValue(value=title))
+            for i, title in enumerate(path.strip("/").split("/"))
+        ]
+
+        result = self.client.query_points(
+            SECTION_COLLECTION_NAME,
+            query_filter=Filter(
+                must=conditions + []
+                if query is None
+                else [FieldCondition(key="title", match=MatchValue(value=query))]
+            ),
+        )
+        if len(result.points) > 0:
+            return [Section.parse_obj(p.payload) for p in result.points]
+
+        result = self.client.query_points(
+            SECTION_COLLECTION_NAME,
+            query=None if query is None else Document(text=query, model=NEURAL_ENCODER),
+            query_filter=Filter(must=conditions),
+        )
+        return [Section.parse_obj(p.payload) for p in result.points]
 
 
 def main():
