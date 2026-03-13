@@ -13,7 +13,7 @@ from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, Document
+from qdrant_client.models import Distance, VectorParams, PointStruct, Document, TokenizerType, TextIndexParams, TextIndexType
 from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
 
@@ -172,7 +172,7 @@ def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
 def main():
     qdrant_client = QdrantClient(
         host=QDRANT_HOST,
-        port=QDRANT_PORT,
+        port=int(QDRANT_PORT),
         api_key=QDRANT_API_KEY,
         prefer_grpc=True,
         local_inference_batch_size=32,
@@ -188,24 +188,40 @@ def main():
             distance=Distance.COSINE,
         ),
     )
+    
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="title",
-        field_schema=PayloadSchemaType.KEYWORD,
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
         wait=True,
     )
+
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="slug",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
+
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="parents[].title",
-        field_schema=PayloadSchemaType.KEYWORD,
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
         wait=True,
     )
+
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="parents[].slug",
