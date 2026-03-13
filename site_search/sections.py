@@ -4,7 +4,7 @@ import concurrent.futures
 import hashlib
 import uuid
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
@@ -104,6 +104,10 @@ def _parse_markdown(url: str) -> _ParsingResult:
 
     lines = document.splitlines()
 
+    base_parents: list[Parent] = [
+        Parent(title=p, slug=p) for p in urlsplit(url).path.strip("/").split("/")
+    ]
+
     # needs to be a dict because the first section does not have to be level 1
     last: dict[int, Section | None] = {}
 
@@ -131,7 +135,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
             content="\n".join(content),
             slug=_slugify(heading.title),
             url=url,
-            parents=parents,
+            parents=base_parents + parents,
             level=heading.level,
             line=heading.line,
         )
@@ -186,27 +190,27 @@ def main():
     )
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name='title',
+        field_name="title",
         field_schema=PayloadSchemaType.KEYWORD,
-        wait=True
+        wait=True,
     )
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name='slug',
+        field_name="slug",
         field_schema=PayloadSchemaType.KEYWORD,
-        wait=True
+        wait=True,
     )
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name='parents[].title',
+        field_name="parents[].title",
         field_schema=PayloadSchemaType.KEYWORD,
-        wait=True
+        wait=True,
     )
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name='parents[].slug',
+        field_name="parents[].slug",
         field_schema=PayloadSchemaType.KEYWORD,
-        wait=True
+        wait=True,
     )
 
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
