@@ -6,6 +6,7 @@ ROOT_DIR = os.path.dirname(CODE_DIR)
 DATA_DIR = os.path.join(ROOT_DIR, 'data')
 
 COLLECTION_NAME = "site"
+SECTION_COLLECTION_NAME = "sections"
 
 load_dotenv()
 
