@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Response
+from starlette.datastructures import URL
+from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_utils.timing import add_timing_middleware
 from loguru import logger
@@ -72,19 +73,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+RESULT_TEMPLATE = """Search one level up: {up_url}
 
-def _section_list_to_markdown(sections: list[Section]) -> str:
-    return "\n".join(
-        section.content + f"\n{section.url}#{section.slug}\n" for section in sections
+{sections_text}"""
+
+SECTION_TEMPLATE = """{content}
+Search within this section: {section_url}
+"""
+
+
+def _section_list_to_markdown(sections: list[Section], url: URL, path: str) -> str:
+    up_url = url.replace(path="/".join(url.path.strip("/").split("/")[:-1]))
+    sections_text = "\n".join(
+        SECTION_TEMPLATE.format(
+            content=section.content,
+            section_url=url.replace(path=section.parents[-1] + "/" + section.slug),
+        )
+        for section in sections
     )
+
+    return RESULT_TEMPLATE.format(up_url=up_url, sections_text=sections_text)
 
 
 @app.get("/{path:path}")
-async def read_item(path: str, q: str | None = None):
+async def read_item(path: str, request: Request, q: str | None = None):
     sections = searcher.search(query=q, path=path)
     logger.info(f"{len(sections)=}")
     return Response(
-        content=_section_list_to_markdown(sections),
+        content=_section_list_to_markdown(sections, request.url, path),
         media_type="text/markdown; charset=utf-8",
     )
 
