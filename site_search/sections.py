@@ -1,4 +1,5 @@
 import concurrent.futures
+from itertools import accumulate
 import hashlib
 import re
 import uuid
@@ -13,13 +14,10 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
     Distance,
     Document,
-    FieldCondition,
-    Filter,
-    MatchValue,
-    TokenizerType,
+    PointStruct,
     TextIndexParams,
     TextIndexType,
-    PointStruct,
+    TokenizerType,
     VectorParams,
 )
 from qdrant_client.models import PayloadSchemaType
@@ -36,16 +34,11 @@ from site_search.config import (
 )
 
 
-def _slugify(title: str) -> str:
+def slugify_heading(title: str) -> str:
     s = title.lower().strip()
     s = re.sub(r"[\s\-_]+", "-", s)
     s = re.sub(r"[^\w\-]+", "", s)
     return s
-
-
-class Parent(BaseModel):
-    title: str
-    slug: str
 
 
 class Section(BaseModel):
@@ -53,7 +46,7 @@ class Section(BaseModel):
     slug: str
     content: str
     url: str
-    parents: list[Parent]
+    parents: list[str]
     level: int
     line: int
 
@@ -111,9 +104,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
 
     lines = document.splitlines()
 
-    base_parents: list[Parent] = [
-        Parent(title=p, slug=p) for p in urlsplit(url).path.strip("/").split("/")
-    ]
+    base_parents: list[str] = urlsplit(url).path.strip("/").split("/")
 
     # needs to be a dict because the first section does not have to be level 1
     last: dict[int, Section | None] = {}
@@ -126,10 +117,10 @@ def _parse_markdown(url: str) -> _ParsingResult:
             last[j] = None
 
         # lower level sections are parents
-        parents: list[Parent] = []
+        parents: list[str] = []
         for j in range(1, heading.level):
             if (parent := last.get(j)) is not None:
-                parents.append(Parent(title=parent.title, slug=parent.slug))
+                parents.append(parent.slug)
 
         # content should go from start of a section to the start of the next
         if i < len(headings) - 1:
@@ -140,9 +131,9 @@ def _parse_markdown(url: str) -> _ParsingResult:
         section = Section(
             title=heading.title,
             content="\n".join(content),
-            slug=_slugify(heading.title),
+            slug=slugify_heading(heading.title),
             url=url,
-            parents=base_parents + parents,
+            parents=list(accumulate(base_parents + parents, lambda a, b: a + "/" + b)),
             level=heading.level,
             line=heading.line,
         )
@@ -176,42 +167,6 @@ def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
     return [urljoin(url, p.url) for p in all_pages]
 
 
-class SectionSearcher:
-    def __init__(self):
-        self.client: QdrantClient
-        self.client = QdrantClient(
-            host=QDRANT_HOST,
-            port=QDRANT_PORT,
-            api_key=QDRANT_API_KEY,
-            prefer_grpc=True,
-            local_inference_batch_size=32,
-        )
-
-    def search(self, query: str | None, path: str) -> list[Section]:
-        conditions = [
-            FieldCondition(key=f"parents[{i}].title", match=MatchValue(value=title))
-            for i, title in enumerate(path.strip("/").split("/"))
-        ]
-
-        result = self.client.query_points(
-            SECTION_COLLECTION_NAME,
-            query_filter=Filter(
-                must=conditions + []
-                if query is None
-                else [FieldCondition(key="title", match=MatchValue(value=query))]
-            ),
-        )
-        if len(result.points) > 0:
-            return [Section.parse_obj(p.payload) for p in result.points]
-
-        result = self.client.query_points(
-            SECTION_COLLECTION_NAME,
-            query=None if query is None else Document(text=query, model=NEURAL_ENCODER),
-            query_filter=Filter(must=conditions),
-        )
-        return [Section.parse_obj(p.payload) for p in result.points]
-
-
 def main():
     qdrant_client = QdrantClient(
         host=QDRANT_HOST,
@@ -231,7 +186,7 @@ def main():
             distance=Distance.COSINE,
         ),
     )
-    
+
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="title",
@@ -254,20 +209,7 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name="parents[].title",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
-    )
-
-    qdrant_client.create_payload_index(
-        collection_name=SECTION_COLLECTION_NAME,
-        field_name="parents[].slug",
+        field_name="parents[]",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
