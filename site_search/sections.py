@@ -1,44 +1,44 @@
-from qdrant_client.models import PayloadSchemaType
-from collections import namedtuple
 import concurrent.futures
+from itertools import accumulate
 import hashlib
-import uuid
 import re
+import uuid
 from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
+from markdown_it import MarkdownIt
+from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import (
+    Distance,
+    Document,
+    PointStruct,
+    TextIndexParams,
+    TextIndexType,
+    TokenizerType,
+    VectorParams,
+)
+from qdrant_client.models import PayloadSchemaType
 from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Document, TokenizerType, TextIndexParams, TextIndexType
-from markdown_it import MarkdownIt
-from markdown_it.tree import SyntaxTreeNode
 
 from site_search.config import (
+    NEURAL_ENCODER,
+    QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
-    QDRANT_API_KEY,
-    NEURAL_ENCODER,
     SECTION_COLLECTION_NAME,
 )
 
-# https://spec.commonmark.org/0.31.2/#atx-heading
-section_pattern = re.compile(r"\s{0,3}(#+)\s+(.*?)\s*#*\s*")
 
-
-def _slugify(title: str) -> str:
+def slugify_heading(title: str) -> str:
     s = title.lower().strip()
     s = re.sub(r"[\s\-_]+", "-", s)
     s = re.sub(r"[^\w\-]+", "", s)
     return s
-
-
-class Parent(BaseModel):
-    title: str
-    slug: str
 
 
 class Section(BaseModel):
@@ -46,7 +46,7 @@ class Section(BaseModel):
     slug: str
     content: str
     url: str
-    parents: list[Parent]
+    parents: list[str]
     level: int
     line: int
 
@@ -104,9 +104,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
 
     lines = document.splitlines()
 
-    base_parents: list[Parent] = [
-        Parent(title=p, slug=p) for p in urlsplit(url).path.strip("/").split("/")
-    ]
+    base_parents: list[str] = urlsplit(url).path.strip("/").split("/")
 
     # needs to be a dict because the first section does not have to be level 1
     last: dict[int, Section | None] = {}
@@ -119,10 +117,10 @@ def _parse_markdown(url: str) -> _ParsingResult:
             last[j] = None
 
         # lower level sections are parents
-        parents: list[Parent] = []
+        parents: list[str] = []
         for j in range(1, heading.level):
             if (parent := last.get(j)) is not None:
-                parents.append(Parent(title=parent.title, slug=parent.slug))
+                parents.append(parent.slug)
 
         # content should go from start of a section to the start of the next
         if i < len(headings) - 1:
@@ -133,9 +131,9 @@ def _parse_markdown(url: str) -> _ParsingResult:
         section = Section(
             title=heading.title,
             content="\n".join(content),
-            slug=_slugify(heading.title),
+            slug=slugify_heading(heading.title),
             url=url,
-            parents=base_parents + parents,
+            parents=list(accumulate(base_parents + parents, lambda a, b: a + "/" + b)),
             level=heading.level,
             line=heading.line,
         )
@@ -188,7 +186,7 @@ def main():
             distance=Distance.COSINE,
         ),
     )
-    
+
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="title",
@@ -211,20 +209,7 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name="parents[].title",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
-    )
-
-    qdrant_client.create_payload_index(
-        collection_name=SECTION_COLLECTION_NAME,
-        field_name="parents[].slug",
+        field_name="parents[]",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
