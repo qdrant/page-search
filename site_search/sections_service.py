@@ -34,7 +34,7 @@ class SectionSearcher:
 
     def search(self, query: str | None, path: str) -> list[Section]:
         conditions = [
-            FieldCondition(key="parents[]", match=MatchValue(value=path.strip("/")))
+            FieldCondition(key="parents", match=MatchValue(value=path.strip("/")))
         ]
 
         result = self.client.query_points(
@@ -73,7 +73,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-RESULT_TEMPLATE = """Search one level up: {up_url}
+RESULT_TEMPLATE = """Read one level up: {up_url}
 
 {sections_text}"""
 
