@@ -209,7 +209,7 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name="parents[]",
+        field_name="parents",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
