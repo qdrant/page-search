@@ -17,6 +17,8 @@ from site_search.config import (
     QDRANT_HOST,
     QDRANT_PORT,
     SECTION_COLLECTION_NAME,
+    SECTIONS_EXACT_LIMIT,
+    SECTIONS_SEARCH_LIMIT,
 )
 from site_search.sections import Section, slugify_heading
 
@@ -48,6 +50,7 @@ class SectionSearcher:
                     )
                 ]
             ),
+            limit=SECTIONS_EXACT_LIMIT,
         )
         if len(result.points) > 0:
             return [Section.parse_obj(p.payload) for p in result.points]
@@ -56,6 +59,7 @@ class SectionSearcher:
             SECTION_COLLECTION_NAME,
             query=None if query is None else Document(text=query, model=NEURAL_ENCODER),
             query_filter=Filter(must=conditions),
+            limit=SECTIONS_SEARCH_LIMIT,
         )
         return [Section.parse_obj(p.payload) for p in result.points]
 
