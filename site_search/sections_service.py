@@ -89,7 +89,7 @@ def _section_list_to_markdown(sections: list[Section], url: URL, path: str) -> s
             content=section.content,
             section_url=url.replace(path=section.parents[-1] + "/" + section.slug),
         )
-        for section in sections
+        for section in sorted(sections, key=lambda s: (s.url, s.line))
     )
 
     return RESULT_TEMPLATE.format(up_url=up_url, sections_text=sections_text)
