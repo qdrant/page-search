@@ -144,7 +144,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
     return _ParsingResult(sections=sections, url=url)
 
 
-def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
+def all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
     if not sitemap_url:
         tree = sitemap_tree_for_homepage(url)
         all_pages = tree.all_pages()
@@ -202,6 +202,19 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
+        field_name="url",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
         field_name="slug",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
@@ -214,7 +227,7 @@ def main():
         wait=True,
     )
 
-    urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
+    urls = all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_parse_markdown, url) for url in urls]
