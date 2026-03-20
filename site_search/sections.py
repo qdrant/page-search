@@ -46,6 +46,7 @@ class Section(BaseModel):
     slug: str
     content: str
     url: str
+    path: str
     parents: list[str]
     level: int
     line: int
@@ -128,12 +129,15 @@ def _parse_markdown(url: str) -> _ParsingResult:
         else:
             content = lines[heading.line :]
 
+        slug = slugify_heading(heading.title)
+        all_parents = list(accumulate(base_parents + parents, lambda a, b: a + "/" + b))
         section = Section(
             title=heading.title,
             content="\n".join(content),
-            slug=slugify_heading(heading.title),
+            slug=slug,
             url=url,
-            parents=list(accumulate(base_parents + parents, lambda a, b: a + "/" + b)),
+            parents=all_parents,
+            path=f"{all_parents[-1]}/{slug}",
             level=heading.level,
             line=heading.line,
         )
@@ -197,6 +201,26 @@ def main():
             max_token_len=20,
             lowercase=True,
         ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name="url",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name="path",
+        field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
 
