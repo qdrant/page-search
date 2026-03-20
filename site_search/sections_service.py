@@ -1,5 +1,3 @@
-from urllib.parse import urljoin, urlsplit
-
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_utils.timing import add_timing_middleware
@@ -23,7 +21,7 @@ from site_search.config import (
     SECTIONS_EXACT_LIMIT,
     SECTIONS_SEARCH_LIMIT,
 )
-from site_search.sections import Section, all_sitemap_urls, slugify_heading
+from site_search.sections import Section, slugify_heading
 
 RESULT_TEMPLATE = """Read one level up: {up_url}
 
@@ -72,24 +70,27 @@ class SectionSearcher:
             local_inference_batch_size=32,
         )
 
-        self._base_url = "https://qdrant.tech/"
-        self._all_paths = {
-            urlsplit(url).path.strip("/")
-            for url in all_sitemap_urls(
-                self._base_url, "https://qdrant.tech/sitemap.xml"
-            )
-        }
-
     def search(self, query: str | None, path: str) -> SectionSearchResult:
-        if query is None and path.strip("/") in self._all_paths:
+        if query is None:
             # return everything on this page
             result = self.client.query_points(
                 SECTION_COLLECTION_NAME,
                 query_filter=Filter(
                     must=[
                         FieldCondition(
-                            key="url",
-                            match=MatchValue(value=urljoin(self._base_url, path)),
+                            key="path",
+                            match=MatchValue(value=path),
+                        )
+                    ]
+                ),
+                limit=SECTIONS_EXACT_LIMIT,
+            )
+            sub_sections = self.client.query_points(
+                SECTION_COLLECTION_NAME,
+                query_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="parents", match=MatchValue(value=path.strip("/"))
                         )
                     ]
                 ),
@@ -97,11 +98,7 @@ class SectionSearcher:
             )
             return SectionSearchResult(
                 sections=[Section.parse_obj(p.payload) for p in result.points],
-                sublinks=[
-                    u
-                    for u in self._all_paths
-                    if u.startswith(path.strip("/")) and u != path.strip("/")
-                ],
+                sublinks=[s.payload["path"] for s in sub_sections.points],
             )
 
         conditions = [
@@ -112,9 +109,8 @@ class SectionSearcher:
         result = self.client.query_points(
             SECTION_COLLECTION_NAME,
             query_filter=Filter(
-                must=conditions + []
-                if query is None
-                else [
+                must=conditions
+                + [
                     FieldCondition(
                         key="slug", match=MatchValue(value=slugify_heading(query))
                     )
@@ -130,7 +126,7 @@ class SectionSearcher:
         # just search for the query
         result = self.client.query_points(
             SECTION_COLLECTION_NAME,
-            query=None if query is None else Document(text=query, model=NEURAL_ENCODER),
+            query=Document(text=query, model=NEURAL_ENCODER),
             query_filter=Filter(must=conditions),
             limit=SECTIONS_SEARCH_LIMIT,
         )

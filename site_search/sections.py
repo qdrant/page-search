@@ -46,6 +46,7 @@ class Section(BaseModel):
     slug: str
     content: str
     url: str
+    path: str
     parents: list[str]
     level: int
     line: int
@@ -128,12 +129,15 @@ def _parse_markdown(url: str) -> _ParsingResult:
         else:
             content = lines[heading.line :]
 
+        slug = slugify_heading(heading.title)
+        all_parents = list(accumulate(base_parents + parents, lambda a, b: a + "/" + b))
         section = Section(
             title=heading.title,
             content="\n".join(content),
-            slug=slugify_heading(heading.title),
+            slug=slug,
             url=url,
-            parents=list(accumulate(base_parents + parents, lambda a, b: a + "/" + b)),
+            parents=all_parents,
+            path=f"{all_parents[-1]}/{slug}",
             level=heading.level,
             line=heading.line,
         )
@@ -144,7 +148,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
     return _ParsingResult(sections=sections, url=url)
 
 
-def all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
+def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
     if not sitemap_url:
         tree = sitemap_tree_for_homepage(url)
         all_pages = tree.all_pages()
@@ -215,6 +219,13 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
+        field_name="path",
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
         field_name="slug",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
@@ -227,7 +238,7 @@ def main():
         wait=True,
     )
 
-    urls = all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
+    urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_parse_markdown, url) for url in urls]
