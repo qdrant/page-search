@@ -47,6 +47,7 @@ class Section(BaseModel):
     content: str
     url: str
     path: str
+    page: str
     parents: list[str]
     level: int
     line: int
@@ -138,6 +139,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
             url=url,
             parents=all_parents,
             path=f"{all_parents[-1]}/{slug}",
+            page="/".join(base_parents),
             level=heading.level,
             line=heading.line,
         )
@@ -220,6 +222,13 @@ def main():
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
         field_name="path",
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name="page",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )

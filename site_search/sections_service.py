@@ -71,39 +71,61 @@ class SectionSearcher:
         )
 
     def search(self, query: str | None, path: str) -> SectionSearchResult:
-        if query is None:
-            # return everything on this page
-            result = self.client.query_points(
-                SECTION_COLLECTION_NAME,
-                query_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="path",
-                            match=MatchValue(value=path),
-                        )
-                    ]
-                ),
-                limit=SECTIONS_EXACT_LIMIT,
-            )
-            sub_sections = self.client.query_points(
-                SECTION_COLLECTION_NAME,
-                query_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="parents", match=MatchValue(value=path.strip("/"))
-                        )
-                    ]
-                ),
-                limit=SECTIONS_EXACT_LIMIT,
-            )
-            return SectionSearchResult(
-                sections=[Section.parse_obj(p.payload) for p in result.points],
-                sublinks=[s.payload["path"] for s in sub_sections.points],
-            )
-
         conditions = [
             FieldCondition(key="parents", match=MatchValue(value=path.strip("/")))
         ]
+
+        if query is None:
+            # try to find a section that exactly matches this path
+            sections: list[Section] = [
+                Section.parse_obj(p.payload)
+                for p in self.client.query_points(
+                    SECTION_COLLECTION_NAME,
+                    query_filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="path", match=MatchValue(value=path.strip("/"))
+                            )
+                        ]
+                    ),
+                    limit=SECTIONS_EXACT_LIMIT,
+                ).points
+            ]
+
+            # if we found no sections with this exact path, the path might point to a page
+            page = sections[0].page if len(sections) > 0 else path.strip("/")
+
+            # return everything on this page that's below this path
+            sub_sections: list[Section] = [
+                Section.parse_obj(p.payload)
+                for p in self.client.query_points(
+                    SECTION_COLLECTION_NAME,
+                    query_filter=Filter(
+                        must=conditions
+                        + [FieldCondition(key="page", match=MatchValue(value=page))]
+                    ),
+                    limit=SECTIONS_EXACT_LIMIT,
+                ).points
+            ]
+
+            # add links to all pages that are below this one in the hierarchy
+            sub_pages: list[Section] = [
+                Section.parse_obj(p.payload)
+                for p in self.client.query_points(
+                    SECTION_COLLECTION_NAME,
+                    query_filter=Filter(
+                        must=conditions,
+                        must_not=[
+                            FieldCondition(key="page", match=MatchValue(value=page))
+                        ],
+                    ),
+                    limit=SECTIONS_EXACT_LIMIT,
+                ).points
+            ]
+            return SectionSearchResult(
+                sections=sections + sub_sections,
+                sublinks=[s.path for s in sub_pages],
+            )
 
         # try to find an exact matching heading for the query
         result = self.client.query_points(
