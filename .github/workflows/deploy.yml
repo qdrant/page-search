@@ -19,7 +19,7 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
     # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
     - name: Build backend
       run: |
         cd $GITHUB_WORKSPACE/rust_search
@@ -30,7 +30,7 @@ jobs:
         ls -al .
     
     - name: copy data with ssh
-      uses: appleboy/scp-action@master
+      uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
       with:
         host: ${{ secrets.DEPLOY_HOST }}
         username: ${{ secrets.DEPLOY_USER }}
@@ -39,7 +39,7 @@ jobs:
         target: "deployment/data"
 
     - name: run images
-      uses: fifsky/ssh-action@master
+      uses: fifsky/ssh-action@58b3c484be9c20cf118fd3b939a6d2cb3c769512 # v0.0.6
       with:
         command: |
           docker load -i deployment/data/qdrant-site-search.tar;
