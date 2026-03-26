@@ -5,11 +5,11 @@ from loguru import logger
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
+    Condition,
     Document,
     FieldCondition,
     Filter,
     MatchValue,
-    Condition,
 )
 from starlette.datastructures import URL
 
@@ -24,16 +24,13 @@ from site_search.config import (
 )
 from site_search.sections import Section, slugify_heading
 
-# RESULT_TEMPLATE = """Read one level up: {up_url}
-#
-# {sections_text}"""
-#
-# SECTION_TEMPLATE = """{content}
-# Search within this section: {section_url}
-# """
-RESULT_TEMPLATE = """{sections_text}"""
+RESULT_TEMPLATE = """Read one level up: {up_url}
 
-SECTION_TEMPLATE = """{content}"""
+{sections_text}"""
+
+SECTION_TEMPLATE = """{content}
+Search within this section: {section_url}
+"""
 
 
 class SectionSearchResult(BaseModel):
@@ -41,21 +38,29 @@ class SectionSearchResult(BaseModel):
     sublinks: list[str] | None = None
 
     def markdown(self, request_url: URL) -> str:
+        sections = sorted(self.sections, key=lambda s: (s.url, s.line))
+        query = None
+        if (
+            "s=" in request_url.query
+            and len(sections) > 0
+            and len(sections[0].parent_sections) > 1
+        ):
+            query = f"s={sections[0].parent_sections[-2]}"
+
         up_url = request_url.replace(
-            path="/".join(request_url.path.strip("/").split("/")[:-1])
+            path="/".join(request_url.path.strip("/").split("/")[:-1]), query=query
         )
         sections_text = "\n".join(
             SECTION_TEMPLATE.format(
                 content=section.content,
-                # section_url=request_url.replace(
-                #     path=section.parents[-1] + "/" + section.slug
-                # ),
+                section_url=request_url.replace(
+                    query=f"s={section.slug}", path=section.page
+                ),
             )
-            for section in sorted(self.sections, key=lambda s: (s.url, s.line))
+            for section in sections
         )
 
-        # result = RESULT_TEMPLATE.format(up_url=up_url, sections_text=sections_text)
-        result = RESULT_TEMPLATE.format(sections_text=sections_text)
+        result = RESULT_TEMPLATE.format(up_url=up_url, sections_text=sections_text)
         if self.sublinks is not None and len(self.sublinks) > 0:
             result += "\n## Subsites to Search\n"
             for sub in self.sublinks:
