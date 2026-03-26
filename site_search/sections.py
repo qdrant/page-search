@@ -46,9 +46,9 @@ class Section(BaseModel):
     slug: str
     content: str
     url: str
-    path: str
     page: str
-    parents: list[str]
+    parent_sections: list[str]
+    parent_pages: list[str]
     level: int
     line: int
 
@@ -106,14 +106,25 @@ def _parse_markdown(url: str) -> _ParsingResult:
 
     lines = document.splitlines()
 
-    base_parents: list[str] = urlsplit(url).path.strip("/").split("/")
+    page = urlsplit(url).path.strip("/")
+    parent_pages: list[str] = list(
+        accumulate(page.split("/"), lambda a, b: a + "/" + b)
+    )
 
     # needs to be a dict because the first section does not have to be level 1
     last: dict[int, Section | None] = {}
 
     sections: list[Section] = []
+    slug_counts: dict[str, int] = {}
 
     for i, heading in enumerate(headings):
+        slug = slugify_heading(heading.title)
+        if heading.line > 0:
+            count = slug_counts.get(slug, 0)
+            slug_counts[slug] = count + 1
+            if count > 0:
+                slug += f"-{count}"
+
         # higher level sections end here
         for j in range(heading.level + 1, 6):
             last[j] = None
@@ -124,22 +135,23 @@ def _parse_markdown(url: str) -> _ParsingResult:
             if (parent := last.get(j)) is not None:
                 parents.append(parent.slug)
 
+        # sections being their own parents makes filtering easier
+        parents.append(slug)
+
         # content should go from start of a section to the start of the next
         if i < len(headings) - 1:
             content = lines[heading.line : headings[i + 1].line]
         else:
             content = lines[heading.line :]
 
-        slug = slugify_heading(heading.title)
-        all_parents = list(accumulate(base_parents + parents, lambda a, b: a + "/" + b))
         section = Section(
             title=heading.title,
             content="\n".join(content),
             slug=slug,
             url=url,
-            parents=all_parents,
-            path=f"{all_parents[-1]}/{slug}",
-            page="/".join(base_parents),
+            parent_pages=parent_pages,
+            parent_sections=parents,
+            page=page,
             level=heading.level,
             line=heading.line,
         )
@@ -221,13 +233,6 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name="path",
-        field_schema=PayloadSchemaType.KEYWORD,
-        wait=True,
-    )
-
-    qdrant_client.create_payload_index(
-        collection_name=SECTION_COLLECTION_NAME,
         field_name="page",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
@@ -242,7 +247,14 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SECTION_COLLECTION_NAME,
-        field_name="parents",
+        field_name="parent_sections",
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name="parent_pages",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
