@@ -78,45 +78,48 @@ class SectionSearcher:
     def search(
         self, query: str | None, path: str, section: str | None
     ) -> SectionSearchResult:
-        # if query is not None and section is None:
-        #     # TODO: Search through everything on and under path
-        #     raise NotImplementedError
+        if section is None and query is not None:
+            conditions: list[Condition] = [
+                FieldCondition(
+                    key="parent_pages", match=MatchValue(value=path.strip("/"))
+                )
+            ]
+        else:
+            conditions: list[Condition] = [
+                FieldCondition(key="page", match=MatchValue(value=path.strip("/")))
+            ]
 
-        # exact: try to match section, if query also try to match to section
-        conditions: list[Condition] = [
-            FieldCondition(key="page", match=MatchValue(value=path.strip("/")))
-        ]
         if section is not None:
             conditions.append(
                 FieldCondition(key="parent_sections", match=MatchValue(value=section))
             )
-        #
-        # if query is not None:
-        #     result = self.client.query_points(
-        #         SECTION_COLLECTION_NAME,
-        #         query_filter=Filter(
-        #             must=conditions
-        #             + [
-        #                 FieldCondition(
-        #                     key="slug", match=MatchValue(value=slugify_heading(query))
-        #                 )
-        #             ]
-        #         ),
-        #         limit=SECTIONS_EXACT_LIMIT,
-        #     )
-        #     if len(result.points) > 0:
-        #         return SectionSearchResult(
-        #             sections=[Section.parse_obj(p.payload) for p in result.points]
-        #         )
-        #     result = self.client.query_points(
-        #         SECTION_COLLECTION_NAME,
-        #         query=Document(text=query, model=NEURAL_ENCODER),
-        #         query_filter=Filter(must=conditions),
-        #         limit=SECTIONS_SEARCH_LIMIT,
-        #     )
-        #     return SectionSearchResult(
-        #         sections=[Section.parse_obj(p.payload) for p in result.points]
-        #     )
+
+        if query is not None:
+            result = self.client.query_points(
+                SECTION_COLLECTION_NAME,
+                query_filter=Filter(
+                    must=conditions
+                    + [
+                        FieldCondition(
+                            key="slug", match=MatchValue(value=slugify_heading(query))
+                        )
+                    ]
+                ),
+                limit=SECTIONS_EXACT_LIMIT,
+            )
+            if len(result.points) > 0:
+                return SectionSearchResult(
+                    sections=[Section.parse_obj(p.payload) for p in result.points]
+                )
+            result = self.client.query_points(
+                SECTION_COLLECTION_NAME,
+                query=Document(text=query, model=NEURAL_ENCODER),
+                query_filter=Filter(must=conditions),
+                limit=SECTIONS_SEARCH_LIMIT,
+            )
+            return SectionSearchResult(
+                sections=[Section.parse_obj(p.payload) for p in result.points]
+            )
 
         # everything on this page and under this section
         result = self.client.query_points(
@@ -124,91 +127,37 @@ class SectionSearcher:
             query_filter=Filter(must=conditions),
             limit=SECTIONS_EXACT_LIMIT,
         )
-        return SectionSearchResult(
-            sections=[Section.parse_obj(p.payload) for p in result.points]
-        )
-        # TODO: sub-links if section is None
 
-        # if query is None:
-        #     # try to find a section that exactly matches this path
-        #     sections: list[Section] = [
-        #         Section.parse_obj(p.payload)
-        #         for p in self.client.query_points(
-        #             SECTION_COLLECTION_NAME,
-        #             query_filter=Filter(
-        #                 must=[
-        #                     FieldCondition(
-        #                         key="path", match=MatchValue(value=path.strip("/"))
-        #                     )
-        #                 ]
-        #             ),
-        #             limit=SECTIONS_EXACT_LIMIT,
-        #         ).points
-        #     ]
-        #
-        #     # if we found no sections with this exact path, the path might point to a page
-        #     page = sections[0].page if len(sections) > 0 else path.strip("/")
-        #
-        #     # return everything on this page that's below this path
-        #     sub_sections: list[Section] = [
-        #         Section.parse_obj(p.payload)
-        #         for p in self.client.query_points(
-        #             SECTION_COLLECTION_NAME,
-        #             query_filter=Filter(
-        #                 must=conditions
-        #                 + [FieldCondition(key="page", match=MatchValue(value=page))]
-        #             ),
-        #             limit=SECTIONS_EXACT_LIMIT,
-        #         ).points
-        #     ]
-        #
-        #     # add links to all pages that are below this one in the hierarchy
-        #     sub_pages: list[Section] = [
-        #         Section.parse_obj(p.payload)
-        #         for p in self.client.query_points(
-        #             SECTION_COLLECTION_NAME,
-        #             query_filter=Filter(
-        #                 must=conditions,
-        #                 must_not=[
-        #                     FieldCondition(key="page", match=MatchValue(value=page))
-        #                 ],
-        #             ),
-        #             limit=SECTIONS_EXACT_LIMIT,
-        #         ).points
-        #     ]
-        #     return SectionSearchResult(
-        #         sections=sections + sub_sections,
-        #         sublinks=[s.path for s in sub_pages],
-        #     )
-        #
-        # # try to find an exact matching heading for the query
-        # result = self.client.query_points(
-        #     SECTION_COLLECTION_NAME,
-        #     query_filter=Filter(
-        #         must=conditions
-        #         + [
-        #             FieldCondition(
-        #                 key="slug", match=MatchValue(value=slugify_heading(query))
-        #             )
-        #         ]
-        #     ),
-        #     limit=SECTIONS_EXACT_LIMIT,
-        # )
-        # if len(result.points) > 0:
-        #     return SectionSearchResult(
-        #         sections=[Section.parse_obj(p.payload) for p in result.points]
-        #     )
-        #
-        # # just search for the query
-        # result = self.client.query_points(
-        #     SECTION_COLLECTION_NAME,
-        #     query=Document(text=query, model=NEURAL_ENCODER),
-        #     query_filter=Filter(must=conditions),
-        #     limit=SECTIONS_SEARCH_LIMIT,
-        # )
-        # return SectionSearchResult(
-        #     sections=[Section.parse_obj(p.payload) for p in result.points]
-        # )
+        sublinks = None
+        if section is None:
+            sublinks: list[str] = sorted(
+                [
+                    str(p.value)
+                    for p in self.client.facet(
+                        SECTION_COLLECTION_NAME,
+                        key="page",
+                        facet_filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="parent_pages",
+                                    match=MatchValue(value=path.strip("/")),
+                                )
+                            ],
+                            must_not=[
+                                FieldCondition(
+                                    key="page", match=MatchValue(value=path.strip("/"))
+                                )
+                            ],
+                        ),
+                        limit=SECTIONS_EXACT_LIMIT,
+                    ).hits
+                ]
+            )
+
+        return SectionSearchResult(
+            sections=[Section.parse_obj(p.payload) for p in result.points],
+            sublinks=sublinks,
+        )
 
 
 searcher = SectionSearcher()
