@@ -39,6 +39,7 @@ class SectionSearchResult(BaseModel):
 
     def markdown(self, request_url: URL) -> str:
         sections = sorted(self.sections, key=lambda s: (s.url, s.line))
+        path = "/".join(request_url.path.strip("/").split("/")[:-1])
         query = None
         if (
             "s=" in request_url.query
@@ -46,9 +47,10 @@ class SectionSearchResult(BaseModel):
             and len(sections[0].parent_sections) > 1
         ):
             query = f"s={sections[0].parent_sections[-2]}"
+            path = request_url.path.strip("/")
 
         up_url = request_url.replace(
-            path="/".join(request_url.path.strip("/").split("/")[:-1]), query=query
+            path=path, query=query
         )
         sections_text = "\n".join(
             SECTION_TEMPLATE.format(
