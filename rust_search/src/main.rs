@@ -1,4 +1,5 @@
 mod common;
+mod sections;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -434,7 +435,8 @@ async fn main() -> std::io::Result<()> {
     }
     let qdrant = builder.build().unwrap();
     qdrant.health_check().await.unwrap();
-    let context = Data::new((tokenizer, session, qdrant));
+    let qdrant = Data::new(qdrant);
+    let context = Data::new((tokenizer, session, qdrant.get_ref().clone()));
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
@@ -443,9 +445,11 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(context.clone())
+            .app_data(qdrant.clone())
             .wrap(cors)
             .wrap(middleware::Logger::default())
             .service(query_handler)
+            .service(sections::md_handler)
     });
     server.bind(addr)?.run().await
 }

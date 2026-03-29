@@ -7,7 +7,7 @@ authors = ["Andrey Vasnetsov <andrey@vasnetsov.com>"]
 [tool.poetry.dependencies]
 
 fastembed = "0.7.0"
-python = ">=3.10,<3.11"
+python = ">=3.10,<3.12"
 requests = "^2.28.1"
 ultimate-sitemap-parser = "^0.5"
 beautifulsoup4 = "^4.11.1"

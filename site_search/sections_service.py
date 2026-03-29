@@ -79,12 +79,14 @@ class SectionSearcher:
         self, query: str | None, path: str, section: str | None
     ) -> SectionSearchResult:
         if section is None and query is not None:
+            # Search in all sub-pages by query
             conditions: list[Condition] = [
                 FieldCondition(
                     key="parent_pages", match=MatchValue(value=path.strip("/"))
                 )
             ]
         else:
+            # Retrieve a specific page
             conditions: list[Condition] = [
                 FieldCondition(key="page", match=MatchValue(value=path.strip("/")))
             ]
@@ -95,6 +97,8 @@ class SectionSearcher:
             )
 
         if query is not None:
+
+            # Try to do exact match first
             result = self.client.query_points(
                 SECTION_COLLECTION_NAME,
                 query_filter=Filter(
@@ -111,6 +115,8 @@ class SectionSearcher:
                 return SectionSearchResult(
                     sections=[Section.parse_obj(p.payload) for p in result.points]
                 )
+            
+            # If no results, fallback to approximate search
             result = self.client.query_points(
                 SECTION_COLLECTION_NAME,
                 query=Document(text=query, model=NEURAL_ENCODER),
