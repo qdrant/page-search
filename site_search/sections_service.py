@@ -28,9 +28,7 @@ RESULT_TEMPLATE = """Read one level up: {up_url}
 
 {sections_text}"""
 
-SECTION_TEMPLATE = """{content}
-Search within this section: {section_url}
-"""
+SECTION_TEMPLATE = """{content}"""
 
 
 class SectionSearchResult(BaseModel):
@@ -53,12 +51,7 @@ class SectionSearchResult(BaseModel):
             path=path, query=query
         )
         sections_text = "\n".join(
-            SECTION_TEMPLATE.format(
-                content=section.content,
-                section_url=request_url.replace(
-                    query=f"s={section.slug}", path=section.page
-                ),
-            )
+            SECTION_TEMPLATE.format(content=section.content)
             for section in sections
         )
 
