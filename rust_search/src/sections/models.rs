@@ -5,6 +5,8 @@ use qdrant_client::Payload;
 use regex::Regex;
 use serde::Deserialize;
 
+use super::links::rewrite_links;
+
 pub fn slugify_heading(title: &str) -> String {
     let s = title.to_lowercase();
     let s = s.trim();
@@ -85,7 +87,7 @@ impl SectionSearchResult {
 
         let sections_text: String = sections
             .iter()
-            .map(|s| s.content.as_str())
+            .map(|s| rewrite_links(&s.content))
             .collect::<Vec<_>>()
             .join("\n");
 
