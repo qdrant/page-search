@@ -157,7 +157,7 @@ async fn browse_sections(
     path: &str,
     section: Option<&str>,
     conditions: Vec<Condition>,
-) -> anyhow::Result<SectionSearchResult> {
+) -> anyhow::Result<Option<SectionSearchResult>> {
     let points = query_by_filter(client, conditions, sections_exact_limit()).await?;
     let sections = parse_sections(points);
 
@@ -167,7 +167,14 @@ async fn browse_sections(
         None
     };
 
-    Ok(SectionSearchResult { sections, sublinks })
+    let is_empty = sections.is_empty()
+        && sublinks.as_ref().map_or(true, |s| s.is_empty());
+
+    if is_empty {
+        return Ok(None);
+    }
+
+    Ok(Some(SectionSearchResult { sections, sublinks }))
 }
 
 async fn search_sections(
@@ -175,12 +182,12 @@ async fn search_sections(
     query: Option<&str>,
     path: &str,
     section: Option<&str>,
-) -> anyhow::Result<SectionSearchResult> {
+) -> anyhow::Result<Option<SectionSearchResult>> {
     let clean_path = path.trim_matches('/');
     let conditions = build_conditions(clean_path, query, section);
 
     match query {
-        Some(q) => search_by_query(client, q, conditions).await,
+        Some(q) => Ok(Some(search_by_query(client, q, conditions).await?)),
         None => browse_sections(client, clean_path, section, conditions).await,
     }
 }
@@ -210,7 +217,7 @@ pub async fn md_handler(
     .await;
 
     match result {
-        Ok(section_result) => {
+        Ok(Some(section_result)) => {
             log::info!("sections={}", section_result.sections.len());
 
             let conn = req.connection_info();
@@ -222,6 +229,9 @@ pub async fn md_handler(
             HttpResponse::Ok()
                 .content_type("text/markdown; charset=utf-8")
                 .body(markdown)
+        }
+        Ok(None) => {
+            HttpResponse::NotFound().body("Page or section not found")
         }
         Err(e) => {
             log::error!("Section search error: {}", e);
