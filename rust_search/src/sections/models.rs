@@ -17,6 +17,7 @@ pub fn slugify_heading(title: &str) -> String {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Section {
     pub title: String,
     pub slug: String,

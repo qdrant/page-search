@@ -330,14 +330,22 @@ async fn query_handler(
     let section_condition = if section.is_empty() {
         None
     } else {
-        Some(Condition::matches(
-            "sections",
-            MatchValue::Keyword(section.clone()),
-        ))
+        let sections: Vec<String> = section.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        if sections.len() == 1 {
+            Some(Condition::matches("sections", sections.into_iter().next().unwrap()))
+        } else {
+            Some(Condition::matches("sections", sections))
+        }
     };
 
-    let partition_condition =
-        partition.map(|partition| Condition::matches("partition", MatchValue::Keyword(partition)));
+    let partition_condition = partition.map(|partition| {
+        let partitions: Vec<String> = partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        if partitions.len() == 1 {
+            Condition::matches("partition", partitions.into_iter().next().unwrap())
+        } else {
+            Condition::matches("partition", partitions)
+        }
+    });
 
     let mut query_stream = vec![];
 

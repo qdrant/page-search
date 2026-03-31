@@ -168,7 +168,7 @@ async fn browse_sections(
     };
 
     let is_empty = sections.is_empty()
-        && sublinks.as_ref().map_or(true, |s| s.is_empty());
+        && sublinks.as_ref().is_none_or(|s| s.is_empty());
 
     if is_empty {
         return Ok(None);
