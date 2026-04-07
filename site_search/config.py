@@ -20,3 +20,5 @@ NEURAL_ENCODER = 'sentence-transformers/all-MiniLM-L6-v2'
 SEARCH_LIMIT = 5
 SECTIONS_EXACT_LIMIT = int(os.environ.get("SECTIONS_EXACT_LIMIT", 100))
 SECTIONS_SEARCH_LIMIT = int(os.environ.get("SECTIONS_SEARCH_LIMIT", 10))
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
