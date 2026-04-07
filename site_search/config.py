@@ -7,6 +7,7 @@ DATA_DIR = os.path.join(ROOT_DIR, 'data')
 
 COLLECTION_NAME = "site"
 SECTION_COLLECTION_NAME = "sections"
+SNIPPET_COLLECTION_NAME = "snippet-search"
 
 load_dotenv()
 
