@@ -20,6 +20,7 @@ blingfire = "^0.1.8"
 uvicorn = "^0.18.3"
 fastapi-utils = "^0.2.1"
 markdown-it-py = "^4.0.0"
+openai = {extras = ["aiohttp"], version = "^2.30.0"}
 
 [tool.poetry.dev-dependencies]
 
