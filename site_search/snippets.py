@@ -2,6 +2,8 @@ import asyncio
 import concurrent.futures
 import hashlib
 import uuid
+from itertools import islice
+from typing import Callable
 from urllib.parse import urljoin
 
 import requests
@@ -11,8 +13,9 @@ from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
 from openai import AsyncOpenAI, DefaultAioHttpClient
 from openai.types.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import (
     Distance,
     Document,
@@ -25,14 +28,57 @@ from qdrant_client.http.models import (
 from qdrant_client.models import PayloadSchemaType
 
 from site_search.config import (
-    NEURAL_ENCODER,
     OPENAI_API_KEY,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
     SNIPPET_COLLECTION_NAME,
+    SNIPPET_ENCODER,
 )
 from site_search.sections import _all_sitemap_urls
+
+
+class TooManyRetriesError(Exception):
+    pass
+
+
+def retry(
+    fn: Callable,
+    max_retries: int | None,
+    wait: int = 1,
+) -> Callable:
+    def inner(*args, **kwargs):
+        num_tries = 0
+        while True:
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                if max_retries is not None and num_tries >= max_retries:
+                    raise TooManyRetriesError
+
+                if isinstance(e, ResponseHandlingException):
+                    logger.warning(
+                        f"{repr(fn)} failed with {repr(e)}, retrying after {wait}"
+                    )
+                    num_tries += 1
+                    # await asyncio.sleep(wait)
+                    continue
+                else:
+                    raise
+
+    return inner
+
+
+# python >= 3.12 has this builtin
+def batched(iterable, n, *, strict=False):
+    if n < 1:
+        raise ValueError("n must be at least one")
+    iterator = iter(iterable)
+    while batch := tuple(islice(iterator, n)):
+        if strict and len(batch) != n:
+            raise ValueError("batched(): incomplete batch")
+        yield batch
+
 
 PROMPT = """
 You are creating a searchable description for a code snippet. The description will be used for vector search by both humans and AI agents.
@@ -142,6 +188,24 @@ class _ParsingResult(BaseModel):
     snippets: list[Snippet]
 
 
+_language_map = {
+    "bash": "shell",
+    "py": "python",
+    "console": "shell",
+    "env": "shell",
+    "sh": "shell",
+    "jsx": "javascript",
+    "http request": "http",
+    "js": "javascript",
+    "txt": "text",
+}
+
+
+def _normalize_language(language: str) -> str:
+    language = language.lower().strip()
+    return _language_map.get(language, language)
+
+
 def _format_context(
     node: SyntaxTreeNode, context: str, offset: int = 10
 ) -> SnippetContext:
@@ -185,7 +249,7 @@ def _extract_from_markdown_tree(
             snippets.append(
                 Snippet(
                     code=node.content,
-                    language=node.info,
+                    language=_normalize_language(node.info),
                     package_name="qdrant-client",
                     source=SourceInfo(
                         url=source,
@@ -197,9 +261,6 @@ def _extract_from_markdown_tree(
                     revision=1,
                 )
             )
-        # Indented code block
-        elif node.type == "code_block":
-            logger.info(f"Code block in {source}")
     return snippets
 
 
@@ -207,9 +268,9 @@ async def _generate_descriptions(snippets: list[Snippet]):
     async with AsyncOpenAI(
         api_key=OPENAI_API_KEY, http_client=DefaultAioHttpClient()
     ) as oai_client:
-            tasks = [snippet.generate_description(oai_client) for snippet in snippets]
-            for task in asyncio.as_completed(tasks):
-                await task
+        tasks = [snippet.generate_description(oai_client) for snippet in snippets]
+        for task in asyncio.as_completed(tasks):
+            await task
 
 
 def _parse_markdown(url: str) -> _ParsingResult:
@@ -232,8 +293,8 @@ def main():
         host=QDRANT_HOST,
         port=int(QDRANT_PORT),
         api_key=QDRANT_API_KEY,
-        prefer_grpc=True,
-        local_inference_batch_size=32,
+        cloud_inference=True,
+        timeout=30,
     )
 
     if qdrant_client.collection_exists(SNIPPET_COLLECTION_NAME):
@@ -242,22 +303,9 @@ def main():
     qdrant_client.create_collection(
         collection_name=SNIPPET_COLLECTION_NAME,
         vectors_config=VectorParams(
-            size=qdrant_client.get_embedding_size(NEURAL_ENCODER),
+            size=qdrant_client.get_embedding_size(SNIPPET_ENCODER),
             distance=Distance.COSINE,
         ),
-    )
-
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="context.after",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
     )
 
     qdrant_client.create_payload_index(
@@ -283,6 +331,7 @@ def main():
 
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
+    snippets = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_parse_markdown, url) for url in urls]
 
@@ -294,12 +343,14 @@ def main():
             if len(result.snippets) == 0:
                 continue
 
-            qdrant_client.upsert(
-                SNIPPET_COLLECTION_NAME,
-                points=[
-                    snippet.as_point(NEURAL_ENCODER) for snippet in result.snippets
-                ],
-            )
+            snippets.extend(result.snippets)
+
+    batches = list(batched(snippets, 8))
+    for batch in tqdm.tqdm(batches, total=len(batches)):
+        retry(qdrant_client.upsert, max_retries=10)(
+            SNIPPET_COLLECTION_NAME,
+            points=[snippet.as_point(SNIPPET_ENCODER) for snippet in batch],
+        )
 
 
 if __name__ == "__main__":

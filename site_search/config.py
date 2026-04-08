@@ -16,6 +16,7 @@ QDRANT_PORT = os.environ.get("QDRANT_PORT", 6333)
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 
 NEURAL_ENCODER = 'sentence-transformers/all-MiniLM-L6-v2'
+SNIPPET_ENCODER = 'mixedbread-ai/mxbai-embed-large-v1'
 
 SEARCH_LIMIT = 5
 SECTIONS_EXACT_LIMIT = int(os.environ.get("SECTIONS_EXACT_LIMIT", 100))
