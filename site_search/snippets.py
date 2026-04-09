@@ -310,7 +310,80 @@ def main():
 
     qdrant_client.create_payload_index(
         collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="code",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="context.before",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="context.after",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="description",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT,
+            tokenizer=TokenizerType.WORD,
+            min_token_len=1,
+            max_token_len=20,
+            lowercase=True,
+        ),
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
         field_name="language",
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="version",
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="revision",
+        field_schema=PayloadSchemaType.INTEGER,
+        wait=True,
+    )
+
+    qdrant_client.create_payload_index(
+        collection_name=SNIPPET_COLLECTION_NAME,
+        field_name="package_name",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
