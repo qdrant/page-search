@@ -2,9 +2,11 @@ import asyncio
 import concurrent.futures
 import hashlib
 import uuid
+from collections.abc import Coroutine
 from itertools import islice
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import urljoin
+from uuid import UUID
 
 import requests
 import tqdm
@@ -25,7 +27,7 @@ from qdrant_client.http.models import (
     TokenizerType,
     VectorParams,
 )
-from qdrant_client.models import PayloadSchemaType
+from qdrant_client.models import PayloadSchemaType, VectorStruct
 
 from site_search.config import (
     OPENAI_API_KEY,
@@ -175,11 +177,13 @@ class Snippet(BaseModel):
         # Use the first 16 bytes of the hash to create a UUID
         return str(uuid.UUID(bytes=content_hash[:16]))
 
-    def as_point(self, model: str) -> PointStruct:
+    def as_point(self, model: str, vector: VectorStruct | None = None) -> PointStruct:
         return PointStruct(
             id=self.uuid,
             payload=self.metadata,
-            vector=Document(text=self.document, model=model),
+            vector=vector
+            if vector is not None
+            else Document(text=self.document, model=model),
         )
 
 
@@ -239,7 +243,7 @@ def _format_context(
 
 
 def _extract_from_markdown_tree(
-    content: str, root: SyntaxTreeNode, source: str, source_hash: str
+    content: str, root: SyntaxTreeNode, source: str, source_hash: str, revision: int
 ) -> list[Snippet]:
     snippets: list[Snippet] = []
 
@@ -258,22 +262,29 @@ def _extract_from_markdown_tree(
                     ),
                     context=_format_context(node, content),
                     version="latest",
-                    revision=1,
+                    revision=revision,
                 )
             )
     return snippets
 
 
-async def _generate_descriptions(snippets: list[Snippet]):
+async def _generate_descriptions(
+    snippets: list[Snippet], existing: dict[int | str | UUID, str | None]
+):
     async with AsyncOpenAI(
         api_key=OPENAI_API_KEY, http_client=DefaultAioHttpClient()
     ) as oai_client:
-        tasks = [snippet.generate_description(oai_client) for snippet in snippets]
+        tasks: list[Coroutine[Any, Any, None]] = []
+        for snippet in snippets:
+            snippet.description = existing.get(snippet.uuid)
+            if snippet.description is None:
+                tasks.append(snippet.generate_description(oai_client))
         for task in asyncio.as_completed(tasks):
             await task
+        return len(tasks)
 
 
-def _parse_markdown(url: str) -> _ParsingResult:
+def _parse_markdown(url: str, revision: int) -> _ParsingResult:
     resp = requests.get(urljoin(url, "index.md"))
     if not resp.ok:
         return _ParsingResult(snippets=[], url=url)
@@ -283,9 +294,18 @@ def _parse_markdown(url: str) -> _ParsingResult:
 
     tokens = MarkdownIt("commonmark").parse(document)
     root = SyntaxTreeNode(tokens)
-    snippets = _extract_from_markdown_tree(document, root, url, md_hash)
-    asyncio.run(_generate_descriptions(snippets))
+    snippets = _extract_from_markdown_tree(document, root, url, md_hash, revision)
     return _ParsingResult(snippets=snippets, url=url)
+
+
+def find_latest_revision(qdrant_client: QdrantClient) -> int:
+    revisions = [
+        int(hit.value)
+        for hit in qdrant_client.facet(
+            SNIPPET_COLLECTION_NAME, key="revision", limit=1000000
+        ).hits
+    ]
+    return max(revisions, default=0)
 
 
 def main():
@@ -297,116 +317,116 @@ def main():
         timeout=30,
     )
 
-    if qdrant_client.collection_exists(SNIPPET_COLLECTION_NAME):
-        qdrant_client.delete_collection(SNIPPET_COLLECTION_NAME)
+    if not qdrant_client.collection_exists(SNIPPET_COLLECTION_NAME):
+        qdrant_client.create_collection(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            vectors_config=VectorParams(
+                size=qdrant_client.get_embedding_size(SNIPPET_ENCODER),
+                distance=Distance.COSINE,
+            ),
+        )
 
-    qdrant_client.create_collection(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=qdrant_client.get_embedding_size(SNIPPET_ENCODER),
-            distance=Distance.COSINE,
-        ),
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="code",
+            field_schema=TextIndexParams(
+                type=TextIndexType.TEXT,
+                tokenizer=TokenizerType.WORD,
+                min_token_len=1,
+                max_token_len=20,
+                lowercase=True,
+            ),
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="code",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="context.before",
+            field_schema=TextIndexParams(
+                type=TextIndexType.TEXT,
+                tokenizer=TokenizerType.WORD,
+                min_token_len=1,
+                max_token_len=20,
+                lowercase=True,
+            ),
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="context.before",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="context.after",
+            field_schema=TextIndexParams(
+                type=TextIndexType.TEXT,
+                tokenizer=TokenizerType.WORD,
+                min_token_len=1,
+                max_token_len=20,
+                lowercase=True,
+            ),
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="context.after",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="description",
+            field_schema=TextIndexParams(
+                type=TextIndexType.TEXT,
+                tokenizer=TokenizerType.WORD,
+                min_token_len=1,
+                max_token_len=20,
+                lowercase=True,
+            ),
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="description",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="language",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="language",
-        field_schema=PayloadSchemaType.KEYWORD,
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="version",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="version",
-        field_schema=PayloadSchemaType.KEYWORD,
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="revision",
+            field_schema=PayloadSchemaType.INTEGER,
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="revision",
-        field_schema=PayloadSchemaType.INTEGER,
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="package_name",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="package_name",
-        field_schema=PayloadSchemaType.KEYWORD,
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="source.url",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="source.url",
-        field_schema=PayloadSchemaType.KEYWORD,
-        wait=True,
-    )
+        qdrant_client.create_payload_index(
+            collection_name=SNIPPET_COLLECTION_NAME,
+            field_name="source.hash",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
 
-    qdrant_client.create_payload_index(
-        collection_name=SNIPPET_COLLECTION_NAME,
-        field_name="source.hash",
-        field_schema=PayloadSchemaType.KEYWORD,
-        wait=True,
-    )
+    revision = find_latest_revision(qdrant_client)
 
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
     snippets = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
-        futures = [pool.submit(_parse_markdown, url) for url in urls]
+        futures = [pool.submit(_parse_markdown, url, revision + 1) for url in urls]
 
         for future in tqdm.tqdm(
             concurrent.futures.as_completed(futures), total=len(urls)
@@ -418,12 +438,38 @@ def main():
 
             snippets.extend(result.snippets)
 
-    batches = list(batched(snippets, 8))
+    batches: list[list[Snippet]] = list(batched(snippets, 8))
+    num_generated = 0
     for batch in tqdm.tqdm(batches, total=len(batches)):
+        existing_points = qdrant_client.retrieve(
+            SNIPPET_COLLECTION_NAME,
+            ids=[snippet.uuid for snippet in batch],
+            with_payload=True,
+            with_vectors=True,
+        )
+
+        existing_vectors: dict[str | int | UUID, VectorStruct | None] = {
+            point.id: point.vector for point in existing_points
+        }  # ty:ignore[invalid-assignment]
+        existing_descriptions: dict[str | int | UUID, str | None] = {
+            point.id: (point.payload or {}).get("description")
+            for point in existing_points
+        }
+
+        num_generated += asyncio.run(
+            _generate_descriptions(batch, existing_descriptions)
+        )
+
         retry(qdrant_client.upsert, max_retries=10)(
             SNIPPET_COLLECTION_NAME,
-            points=[snippet.as_point(SNIPPET_ENCODER) for snippet in batch],
+            points=[
+                snippet.as_point(
+                    SNIPPET_ENCODER, vector=existing_vectors.get(snippet.uuid)
+                )
+                for snippet in batch
+            ],
         )
+    logger.info(f"Generated descriptions for {num_generated} snippets")
 
 
 if __name__ == "__main__":
