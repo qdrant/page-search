@@ -279,7 +279,7 @@ async def _generate_descriptions(
             snippet.description = existing.get(snippet.uuid)
             if snippet.description is None:
                 tasks.append(snippet.generate_description(oai_client))
-        for task in asyncio.as_completed(tasks):
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks)):
             await task
         return len(tasks)
 
@@ -424,7 +424,9 @@ def main():
 
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
-    snippets = []
+    snippets: list[Snippet] = []
+    existing_vectors: dict[str | int | UUID, VectorStruct | None] = {}
+    existing_descriptions: dict[str | int | UUID, str | None] = {}
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_parse_markdown, url, revision + 1) for url in urls]
 
@@ -436,30 +438,25 @@ def main():
             if len(result.snippets) == 0:
                 continue
 
+            existing_points = qdrant_client.retrieve(
+                SNIPPET_COLLECTION_NAME,
+                ids=[snippet.uuid for snippet in result.snippets],
+                with_payload=True,
+                with_vectors=True,
+            )
+
+            for point in existing_points:
+                existing_vectors[point.id] = point.vector  # ty:ignore[invalid-assignment]
+                existing_descriptions[point.id] = (point.payload or {}).get(
+                    "description"
+                )
+
             snippets.extend(result.snippets)
 
+    num_generated = asyncio.run(_generate_descriptions(snippets, existing_descriptions))
+
     batches: list[list[Snippet]] = list(batched(snippets, 8))
-    num_generated = 0
     for batch in tqdm.tqdm(batches, total=len(batches)):
-        existing_points = qdrant_client.retrieve(
-            SNIPPET_COLLECTION_NAME,
-            ids=[snippet.uuid for snippet in batch],
-            with_payload=True,
-            with_vectors=True,
-        )
-
-        existing_vectors: dict[str | int | UUID, VectorStruct | None] = {
-            point.id: point.vector for point in existing_points
-        }  # ty:ignore[invalid-assignment]
-        existing_descriptions: dict[str | int | UUID, str | None] = {
-            point.id: (point.payload or {}).get("description")
-            for point in existing_points
-        }
-
-        num_generated += asyncio.run(
-            _generate_descriptions(batch, existing_descriptions)
-        )
-
         retry(qdrant_client.upsert, max_retries=10)(
             SNIPPET_COLLECTION_NAME,
             points=[
