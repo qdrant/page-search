@@ -11,7 +11,7 @@ from qdrant_client import QdrantClient
 from qdrant_client import models as qdrant_models
 
 from site_search.config import (
-    NEURAL_ENCODER,
+    SNIPPET_ENCODER,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
@@ -44,7 +44,21 @@ class Searcher:
         revision = self.find_latest_revision()
         points = self.client.query_points(
             collection_name=SNIPPET_COLLECTION_NAME,
-            query=qdrant_models.Document(text=query, model=NEURAL_ENCODER),
+            prefetch=[
+                qdrant_models.Prefetch(
+                    query=qdrant_models.Document(text=query, model=SNIPPET_ENCODER),
+                    using="dense",
+                    limit=20,
+                ),
+                qdrant_models.Prefetch(
+                    query=qdrant_models.Document(
+                        text=query, model="qdrant/bm25", options={"language": "none"}
+                    ),
+                    using="sparse",
+                    limit=20,
+                ),
+            ],
+            query=qdrant_models.RrfQuery(rrf=qdrant_models.Rrf(k=1)),
             query_filter=qdrant_models.Filter(
                 must=[
                     qdrant_models.FieldCondition(

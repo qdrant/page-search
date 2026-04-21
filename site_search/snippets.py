@@ -183,7 +183,14 @@ class Snippet(BaseModel):
             payload=self.metadata,
             vector=vector
             if vector is not None
-            else Document(text=self.document, model=model),
+            else {
+                "dense": Document(text=self.document, model=model),
+                "sparse": Document(
+                    text=self.code,
+                    model="qdrant/bm25",
+                    options={"language": "none"},
+                ),
+            },
         )
 
 
