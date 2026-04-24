@@ -1,5 +1,6 @@
 mod common;
 mod sections;
+mod snippets;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -458,6 +459,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .service(query_handler)
             .service(sections::md_handler)
+            .service(snippets::search_handler)
     });
     server.bind(addr)?.run().await
 }
