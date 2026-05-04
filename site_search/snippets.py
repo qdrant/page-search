@@ -1,3 +1,4 @@
+import time
 import asyncio
 import concurrent.futures
 import hashlib
@@ -58,11 +59,14 @@ def retry(
                 if max_retries is not None and num_tries >= max_retries:
                     raise TooManyRetriesError
 
-                if isinstance(e, ResponseHandlingException):
+                if isinstance(
+                    e, (ResponseHandlingException, requests.exceptions.ConnectionError)
+                ):
                     logger.warning(
                         f"{repr(fn)} failed with {repr(e)}, retrying after {wait}"
                     )
                     num_tries += 1
+                    time.sleep(wait)
                     # await asyncio.sleep(wait)
                     continue
                 else:
