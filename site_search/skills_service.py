@@ -4,6 +4,7 @@ from fastapi_utils.timing import add_timing_middleware
 from loguru import logger
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
+from qdrant_client import models as qdrant_models
 from qdrant_client.http.models import (
     Condition,
     Document,
@@ -14,16 +15,16 @@ from qdrant_client.http.models import (
 from starlette.datastructures import URL
 
 from site_search.config import (
-    SNIPPET_ENCODER,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
     SKILLS_COLLECTION_NAME,
     SKILLS_EXACT_LIMIT,
     SKILLS_SEARCH_LIMIT,
+    SNIPPET_ENCODER,
 )
-from site_search.skills import Skill
 from site_search.sections import slugify_heading
+from site_search.skills import Skill
 
 
 class SkillSearchResult(BaseModel):
@@ -84,7 +85,19 @@ class SkillSearcher:
             # If no results, fallback to approximate search
             result = self.client.query_points(
                 SKILLS_COLLECTION_NAME,
-                query=Document(text=query, model=SNIPPET_ENCODER),
+                prefetch=[
+                    qdrant_models.Prefetch(
+                        query=qdrant_models.Document(text=query, model=SNIPPET_ENCODER),
+                        using="dense",
+                        limit=20,
+                    ),
+                    qdrant_models.Prefetch(
+                        query=qdrant_models.Document(text=query, model="qdrant/bm25"),
+                        using="sparse",
+                        limit=20,
+                    ),
+                ],
+                query=qdrant_models.FusionQuery(fusion=qdrant_models.Fusion.RRF),
                 query_filter=Filter(must=conditions),
                 limit=SKILLS_SEARCH_LIMIT,
             )

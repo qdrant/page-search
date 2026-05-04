@@ -18,20 +18,19 @@ from qdrant_client.http.models import (
     TokenizerType,
     VectorParams,
 )
-from qdrant_client.models import PayloadSchemaType
+from qdrant_client.models import Modifier, PayloadSchemaType, SparseVectorParams
 from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
 
 from site_search.config import (
-    SNIPPET_ENCODER,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
     SKILLS_COLLECTION_NAME,
+    SNIPPET_ENCODER,
 )
-
-from site_search.snippets import retry, TooManyRetriesError
+from site_search.snippets import TooManyRetriesError, retry
 
 
 class Skill(BaseModel):
@@ -62,7 +61,10 @@ class Skill(BaseModel):
         return PointStruct(
             id=self.uuid,
             payload=self.metadata,
-            vector=Document(text=self.content, model=model),
+            vector={
+                "dense": Document(text=self.content, model=model),
+                "sparse": Document(text=self.content, model="qdrant/bm25"),
+            },
         )
 
 
@@ -168,10 +170,13 @@ def main():
 
     qdrant_client.create_collection(
         collection_name=SKILLS_COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=qdrant_client.get_embedding_size(SNIPPET_ENCODER),
-            distance=Distance.COSINE,
-        ),
+        vectors_config={
+            "dense": VectorParams(
+                size=qdrant_client.get_embedding_size(SNIPPET_ENCODER),
+                distance=Distance.COSINE,
+            )
+        },
+        sparse_vectors_config={"sparse": SparseVectorParams(modifier=Modifier.IDF)},
     )
 
     qdrant_client.create_payload_index(
