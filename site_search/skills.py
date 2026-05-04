@@ -95,9 +95,13 @@ def _parse_frontmatter(content: str) -> _SkillMetadata | None:
 
 
 def _parse_markdown(url: str) -> _ParsingResult:
+    print(f"Fetching {url}")
     resp = requests.get(url)
     if not resp.ok:
         return _ParsingResult(skills=[], url=url)
+    print(f"Fetched {url}")
+
+    print(f"Parsing {url}")
 
     document = resp.text
 
@@ -119,6 +123,7 @@ def _parse_markdown(url: str) -> _ParsingResult:
         page=page,
     )
 
+    print(f"Parsed {url}")
     return _ParsingResult(skills=[skill], url=url)
 
 
@@ -240,10 +245,12 @@ def main():
             if len(result.skills) == 0:
                 continue
 
+            print(f"Upserting {result.url}")
             qdrant_client.upsert(
                 SKILLS_COLLECTION_NAME,
                 points=[skill.as_point(SNIPPET_ENCODER) for skill in result.skills],
             )
+            print(f"Upserted {result.url}")
 
 
 if __name__ == "__main__":
