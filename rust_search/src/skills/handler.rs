@@ -2,7 +2,7 @@ use actix_web::web::{Data, Query};
 use actix_web::{get, HttpRequest, HttpResponse};
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::{
-    Condition, Document, Filter, QueryPointsBuilder, ScoredPoint, VectorInput,
+    Condition, Document, Filter, PrefetchQueryBuilder, QueryPointsBuilder, ScoredPoint, VectorInput,
 };
 use qdrant_client::Qdrant;
 use serde::Deserialize;
@@ -83,7 +83,21 @@ async fn query_by_document(
     conditions: Vec<Condition>,
 ) -> anyhow::Result<Vec<ScoredPoint>> {
     let mut builder = QueryPointsBuilder::new(SKILLS_COLLECTION_NAME)
-        .query(VectorInput::from(Document::new(query, SKILLS_ENCODER)))
+        .add_prefetch(
+            PrefetchQueryBuilder::default()
+                .query(VectorInput::from(Document::new(query, SKILLS_ENCODER)))
+                .using("dense")
+                .limit(20u64)
+                .build(),
+        )
+        .add_prefetch(
+            PrefetchQueryBuilder::default()
+                .query(VectorInput::from(Document::new(query, "qdrant/bm25")))
+                .using("sparse")
+                .limit(20u64)
+                .build(),
+        )
+        .query(qdrant_client::qdrant::Fusion::Rrf)
         .limit(skills_search_limit())
         .with_payload(true);
     if !conditions.is_empty() {
