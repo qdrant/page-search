@@ -5,6 +5,7 @@ use qdrant_client::Payload;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -27,11 +28,25 @@ impl Skill {
     }
 }
 
-pub struct SkillSearchResult(pub Vec<Skill>);
+pub struct SkillSearchResult {
+    pub skills: Vec<Skill>,
+    pub strategy: Option<String>,
+}
 
 impl SkillSearchResult {
+    pub fn with_strategy(skills: Vec<Skill>, strategy: impl Into<String>) -> Self {
+        Self { skills, strategy: Some(strategy.into()) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.skills.len()
+    }
+
     pub fn to_markdown(&self) -> String {
-        self.0
+        if self.skills.is_empty() {
+            return "<!-- no skills found -->\n".to_string();
+        }
+        self.skills
             .iter()
             .map(|s| s.to_markdown())
             .collect::<Vec<_>>()

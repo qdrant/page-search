@@ -1,3 +1,4 @@
+mod fusion;
 mod handler;
 pub mod models;
 
