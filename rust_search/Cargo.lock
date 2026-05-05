@@ -1786,6 +1786,7 @@ dependencies = [
  "ort",
  "qdrant-client",
  "regex",
+ "reqwest",
  "rust_tokenizers",
  "safe-transmute",
  "serde",

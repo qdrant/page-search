@@ -8,3 +8,4 @@ htmlcov
 data
 /rust_search/all-MiniLM-L6-v2.onnx
 /rust_search/target
+.env
