@@ -3,8 +3,8 @@ use actix_web::{get, HttpRequest, HttpResponse};
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::{
-    Condition, Document, FacetCountsBuilder, Filter, PrefetchQueryBuilder, QueryPointsBuilder, Rrf,
-    ScoredPoint, VectorInput,
+    Condition, Document, Filter, PrefetchQueryBuilder, QueryPointsBuilder, Rrf, ScoredPoint,
+    VectorInput,
 };
 use qdrant_client::Qdrant;
 use serde::Deserialize;
@@ -27,24 +27,6 @@ struct SnippetSearch {
     format: Option<String>,
 }
 
-async fn find_latest_revision(client: &Qdrant) -> anyhow::Result<i64> {
-    let result = client
-        .facet(FacetCountsBuilder::new(SNIPPET_COLLECTION_NAME, "revision").limit(1_000_000))
-        .await?;
-    let max = result
-        .hits
-        .into_iter()
-        .filter_map(|hit| {
-            hit.value.and_then(|v| match v.variant? {
-                qdrant_client::qdrant::facet_value::Variant::IntegerValue(n) => Some(n),
-                _ => None,
-            })
-        })
-        .max()
-        .unwrap_or(0);
-    Ok(max)
-}
-
 fn parse_snippets(points: Vec<ScoredPoint>) -> Vec<Snippet> {
     points
         .into_iter()
@@ -58,8 +40,6 @@ async fn search_snippets(
     language: &str,
     limit: u64,
 ) -> anyhow::Result<SnippetSearchResult> {
-    let revision = find_latest_revision(client).await?;
-
     let mut bm25_doc = Document::new(query, "qdrant/bm25");
     bm25_doc.options.insert(
         "language".to_string(),
@@ -89,10 +69,10 @@ async fn search_snippets(
                     k: Some(1),
                     ..Default::default()
                 }))
-                .filter(Filter::must(vec![
-                    Condition::matches("language", MatchValue::Keyword(language.to_string())),
-                    Condition::matches("revision", MatchValue::Integer(revision)),
-                ]))
+                .filter(Filter::must(vec![Condition::matches(
+                    "language",
+                    MatchValue::Keyword(language.to_string()),
+                )]))
                 .limit(limit)
                 .with_payload(true),
         )

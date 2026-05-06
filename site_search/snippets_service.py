@@ -31,17 +31,7 @@ class Searcher:
             local_inference_batch_size=32,
         )
 
-    def find_latest_revision(self) -> int:
-        revisions = [
-            int(hit.value)
-            for hit in self.client.facet(
-                SNIPPET_COLLECTION_NAME, key="revision", limit=1000000
-            ).hits
-        ]
-        return max(revisions, default=0)
-
     def search(self, query: str, language: str, limit: int = 3) -> list[Snippet]:
-        revision = self.find_latest_revision()
         points = self.client.query_points(
             collection_name=SNIPPET_COLLECTION_NAME,
             prefetch=[
@@ -64,10 +54,6 @@ class Searcher:
                     qdrant_models.FieldCondition(
                         key="language",
                         match=qdrant_models.MatchValue(value=language),
-                    ),
-                    qdrant_models.FieldCondition(
-                        key="revision",
-                        match=qdrant_models.MatchValue(value=revision),
                     ),
                 ]
             ),
