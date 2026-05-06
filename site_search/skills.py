@@ -208,13 +208,7 @@ def main():
     qdrant_client.create_payload_index(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="url",
-        field_schema=TextIndexParams(
-            type=TextIndexType.TEXT,
-            tokenizer=TokenizerType.WORD,
-            min_token_len=1,
-            max_token_len=20,
-            lowercase=True,
-        ),
+        field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
 
