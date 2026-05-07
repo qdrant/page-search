@@ -22,6 +22,8 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import (
     Distance,
     Document,
+    Filter,
+    HasIdCondition,
     PointStruct,
     TextIndexParams,
     TextIndexType,
@@ -129,7 +131,7 @@ class Snippet(BaseModel):
     code: str
     language: str
     version: str
-    revision: int
+    revision: int | None = None
     package_name: str
     source: SourceInfo
     context: SnippetContext
@@ -254,7 +256,7 @@ def _format_context(
 
 
 def _extract_from_markdown_tree(
-    content: str, root: SyntaxTreeNode, source: str, source_hash: str, revision: int
+    content: str, root: SyntaxTreeNode, source: str, source_hash: str
 ) -> list[Snippet]:
     snippets: list[Snippet] = []
 
@@ -273,7 +275,6 @@ def _extract_from_markdown_tree(
                     ),
                     context=_format_context(node, content),
                     version="latest",
-                    revision=revision,
                 )
             )
     return snippets
@@ -295,7 +296,7 @@ async def _generate_descriptions(
         return len(tasks)
 
 
-def _parse_markdown(url: str, revision: int) -> _ParsingResult:
+def _parse_markdown(url: str) -> _ParsingResult:
     resp = requests.get(urljoin(url, "index.md"))
     if not resp.ok:
         return _ParsingResult(snippets=[], url=url)
@@ -305,18 +306,8 @@ def _parse_markdown(url: str, revision: int) -> _ParsingResult:
 
     tokens = MarkdownIt("commonmark").parse(document)
     root = SyntaxTreeNode(tokens)
-    snippets = _extract_from_markdown_tree(document, root, url, md_hash, revision)
+    snippets = _extract_from_markdown_tree(document, root, url, md_hash)
     return _ParsingResult(snippets=snippets, url=url)
-
-
-def find_latest_revision(qdrant_client: QdrantClient) -> int:
-    revisions = [
-        int(hit.value)
-        for hit in qdrant_client.facet(
-            SNIPPET_COLLECTION_NAME, key="revision", limit=1000000
-        ).hits
-    ]
-    return max(revisions, default=0)
 
 
 def main():
@@ -431,53 +422,82 @@ def main():
             wait=True,
         )
 
-    revision = find_latest_revision(qdrant_client)
-
+    run_ts = int(time.time())
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
     snippets: list[Snippet] = []
-    existing_vectors: dict[str | int | UUID, VectorStruct | None] = {}
+    current_uuids: set[str] = set()
+    existing_uuids: set[str] = set()
     existing_descriptions: dict[str | int | UUID, str | None] = {}
+    failed_urls: list[str] = []
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
-        futures = [pool.submit(_parse_markdown, url, revision + 1) for url in urls]
+        futures = {pool.submit(_parse_markdown, url): url for url in urls}
 
         for future in tqdm.tqdm(
             concurrent.futures.as_completed(futures), total=len(urls)
         ):
-            result = future.result()
+            url = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                logger.error(f"Failed to parse {url}: {e}")
+                failed_urls.append(url)
+                continue
 
             if len(result.snippets) == 0:
                 continue
+
+            current_uuids.update(snippet.uuid for snippet in result.snippets)
 
             existing_points = qdrant_client.retrieve(
                 SNIPPET_COLLECTION_NAME,
                 ids=[snippet.uuid for snippet in result.snippets],
                 with_payload=True,
-                with_vectors=True,
+                with_vectors=False,
             )
 
             for point in existing_points:
-                existing_vectors[point.id] = point.vector  # ty:ignore[invalid-assignment]
+                existing_uuids.add(str(point.id))
                 existing_descriptions[point.id] = (point.payload or {}).get(
                     "description"
                 )
 
             snippets.extend(result.snippets)
 
-    num_generated = asyncio.run(_generate_descriptions(snippets, existing_descriptions))
+    new_snippets = [s for s in snippets if s.uuid not in existing_uuids]
+    for snippet in new_snippets:
+        snippet.revision = run_ts
 
-    batches: list[list[Snippet]] = list(batched(snippets, 8))
+    num_generated = asyncio.run(_generate_descriptions(new_snippets, existing_descriptions))
+
+    batches: list[list[Snippet]] = list(batched(new_snippets, 8))
     for batch in tqdm.tqdm(batches, total=len(batches)):
         retry(qdrant_client.upsert, max_retries=10)(
             SNIPPET_COLLECTION_NAME,
-            points=[
-                snippet.as_point(
-                    SNIPPET_ENCODER, vector=existing_vectors.get(snippet.uuid)
-                )
-                for snippet in batch
-            ],
+            points=[snippet.as_point(SNIPPET_ENCODER) for snippet in batch],
         )
-    logger.info(f"Generated descriptions for {num_generated} snippets")
+    logger.info(
+        f"Upserted {len(new_snippets)} new snippets, "
+        f"generated {num_generated} descriptions"
+    )
+
+    if failed_urls:
+        logger.warning(
+            f"Skipping stale-point deletion: {len(failed_urls)} URL(s) failed "
+            f"({failed_urls[:5]}{'...' if len(failed_urls) > 5 else ''}). "
+            f"Re-run indexing to clean up stale snippets."
+        )
+        return
+
+    qdrant_client.delete(
+        SNIPPET_COLLECTION_NAME,
+        points_selector=Filter(
+            must_not=[HasIdCondition(has_id=list(current_uuids))]
+        ),
+        wait=True,
+    )
+    logger.info(f"Deleted stale snippets not in current crawl of {len(current_uuids)} UUIDs")
 
 
 if __name__ == "__main__":
