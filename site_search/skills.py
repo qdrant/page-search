@@ -100,7 +100,7 @@ def _parse_frontmatter(content: str) -> _SkillMetadata | None:
 
 def _parse_markdown(url: str) -> _ParsingResult:
     try:
-        resp = retry(requests.get, 5)(url)
+        resp = retry(requests.get, 5)(url, timeout=30)
     except TooManyRetriesError:
         print(f"Failed to fetch {url}: too many retries")
         return _ParsingResult(skills=[], url=url)
