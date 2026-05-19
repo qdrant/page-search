@@ -12,8 +12,7 @@ on:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "index"
-  index:
+  index-site:
     # The type of runner that the job will run on
     runs-on: ubuntu-latest
 
@@ -21,10 +20,43 @@ jobs:
     steps:
     # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
     - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
-    - name: crawl and index
+    - name: crawl and index site
       run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data qdrant/page-search python -m site_search.crawl
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} qdrant/page-search python -m site_search.encode
+
+  index-sections:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+    - name: crawl and index sections
+      run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} qdrant/page-search python -m site_search.sections
+
+  index-skills:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+    - name: crawl and index skills
+      run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} qdrant/page-search python -m site_search.skills
+
+  index-snippets:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+    - name: crawl and index snippets
+      run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} qdrant/page-search python -m site_search.snippets
