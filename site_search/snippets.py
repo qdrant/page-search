@@ -1,11 +1,11 @@
-import time
 import asyncio
 import concurrent.futures
 import hashlib
+import time
 import uuid
 from collections.abc import Coroutine
 from itertools import islice
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urljoin
 from uuid import UUID
 
@@ -18,7 +18,6 @@ from openai import AsyncOpenAI, DefaultAioHttpClient
 from openai.types.responses import Response
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import (
     Distance,
     Document,
@@ -40,41 +39,8 @@ from site_search.config import (
     SNIPPET_COLLECTION_NAME,
     SNIPPET_ENCODER,
 )
+from site_search.retry import retry, retry_async
 from site_search.sections import _all_sitemap_urls
-
-
-class TooManyRetriesError(Exception):
-    pass
-
-
-def retry(
-    fn: Callable,
-    max_retries: int | None,
-    wait: int = 1,
-) -> Callable:
-    def inner(*args, **kwargs):
-        num_tries = 0
-        while True:
-            try:
-                return fn(*args, **kwargs)
-            except Exception as e:
-                if max_retries is not None and num_tries >= max_retries:
-                    raise TooManyRetriesError
-
-                if isinstance(
-                    e, (ResponseHandlingException, requests.exceptions.ConnectionError)
-                ):
-                    logger.warning(
-                        f"{repr(fn)} failed with {repr(e)}, retrying after {wait}"
-                    )
-                    num_tries += 1
-                    time.sleep(wait)
-                    # await asyncio.sleep(wait)
-                    continue
-                else:
-                    raise
-
-    return inner
 
 
 # python >= 3.12 has this builtin
@@ -138,7 +104,7 @@ class Snippet(BaseModel):
     description: str | None = None
 
     async def generate_description(self, client: AsyncOpenAI) -> None:
-        response: Response = await client.responses.create(
+        response: Response | None = await retry_async(client.responses.create, 5)(
             model="gpt-5-nano",
             input=PROMPT.format(
                 context_before=self.context.before,
@@ -146,7 +112,7 @@ class Snippet(BaseModel):
                 code=self.code,
             ),
             truncation="auto",
-        )
+        )  # ty:ignore[invalid-assignment]
 
         if response is None:
             logger.error(f"OpenAI request failed for {self.source.url}")
@@ -297,7 +263,7 @@ async def _generate_descriptions(
 
 
 def _parse_markdown(url: str) -> _ParsingResult:
-    resp = requests.get(urljoin(url, "index.md"))
+    resp = retry(requests.get, 10)(urljoin(url, "index.md"))
     if not resp.ok:
         return _ParsingResult(snippets=[], url=url)
 
@@ -319,8 +285,8 @@ def main():
         timeout=30,
     )
 
-    if not qdrant_client.collection_exists(SNIPPET_COLLECTION_NAME):
-        qdrant_client.create_collection(
+    if not retry(qdrant_client.collection_exists, 10)(SNIPPET_COLLECTION_NAME):
+        retry(qdrant_client.create_collection, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             vectors_config=VectorParams(
                 size=qdrant_client.get_embedding_size(SNIPPET_ENCODER),
@@ -328,7 +294,7 @@ def main():
             ),
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="code",
             field_schema=TextIndexParams(
@@ -341,7 +307,7 @@ def main():
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="context.before",
             field_schema=TextIndexParams(
@@ -354,7 +320,7 @@ def main():
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="context.after",
             field_schema=TextIndexParams(
@@ -367,7 +333,7 @@ def main():
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="description",
             field_schema=TextIndexParams(
@@ -380,42 +346,42 @@ def main():
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="language",
             field_schema=PayloadSchemaType.KEYWORD,
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="version",
             field_schema=PayloadSchemaType.KEYWORD,
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="revision",
             field_schema=PayloadSchemaType.INTEGER,
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="package_name",
             field_schema=PayloadSchemaType.KEYWORD,
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="source.url",
             field_schema=PayloadSchemaType.KEYWORD,
             wait=True,
         )
 
-        qdrant_client.create_payload_index(
+        retry(qdrant_client.create_payload_index, 10)(
             collection_name=SNIPPET_COLLECTION_NAME,
             field_name="source.hash",
             field_schema=PayloadSchemaType.KEYWORD,
@@ -423,7 +389,9 @@ def main():
         )
 
     run_ts = int(time.time())
-    urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
+    urls = retry(_all_sitemap_urls, 10)(
+        "https://qdrant.tech/", "https://qdrant.tech/sitemap.xml"
+    )
 
     snippets: list[Snippet] = []
     current_uuids: set[str] = set()
@@ -450,7 +418,7 @@ def main():
 
             current_uuids.update(snippet.uuid for snippet in result.snippets)
 
-            existing_points = qdrant_client.retrieve(
+            existing_points = retry(qdrant_client.retrieve, 10)(
                 SNIPPET_COLLECTION_NAME,
                 ids=[snippet.uuid for snippet in result.snippets],
                 with_payload=True,
@@ -469,7 +437,9 @@ def main():
     for snippet in new_snippets:
         snippet.revision = run_ts
 
-    num_generated = asyncio.run(_generate_descriptions(new_snippets, existing_descriptions))
+    num_generated = asyncio.run(
+        _generate_descriptions(new_snippets, existing_descriptions)
+    )
 
     batches: list[list[Snippet]] = list(batched(new_snippets, 8))
     for batch in tqdm.tqdm(batches, total=len(batches)):
@@ -489,15 +459,21 @@ def main():
             f"Re-run indexing to clean up stale snippets."
         )
         return
+    if len(new_snippets) == 0:
+        logger.warning(
+            "Skipping stale-point deletion: found 0 snippets. "
+            "Re-run indexing to clean up stale snippets."
+        )
+        return
 
-    qdrant_client.delete(
+    retry(qdrant_client.delete, 10)(
         SNIPPET_COLLECTION_NAME,
-        points_selector=Filter(
-            must_not=[HasIdCondition(has_id=list(current_uuids))]
-        ),
+        points_selector=Filter(must_not=[HasIdCondition(has_id=list(current_uuids))]),
         wait=True,
     )
-    logger.info(f"Deleted stale snippets not in current crawl of {len(current_uuids)} UUIDs")
+    logger.info(
+        f"Deleted stale snippets not in current crawl of {len(current_uuids)} UUIDs"
+    )
 
 
 if __name__ == "__main__":

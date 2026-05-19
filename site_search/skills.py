@@ -30,7 +30,7 @@ from site_search.config import (
     SKILLS_COLLECTION_NAME,
     SNIPPET_ENCODER,
 )
-from site_search.snippets import TooManyRetriesError, retry
+from site_search.retry import TooManyRetriesError, retry
 
 
 class Skill(BaseModel):
@@ -165,10 +165,10 @@ def main():
         timeout=30,
     )
 
-    if qdrant_client.collection_exists(SKILLS_COLLECTION_NAME):
-        qdrant_client.delete_collection(SKILLS_COLLECTION_NAME)
+    if retry(qdrant_client.collection_exists, 10)(SKILLS_COLLECTION_NAME):
+        retry(qdrant_client.delete_collection, 10)(SKILLS_COLLECTION_NAME)
 
-    qdrant_client.create_collection(
+    retry(qdrant_client.create_collection, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         vectors_config={
             "dense": VectorParams(
@@ -179,7 +179,7 @@ def main():
         sparse_vectors_config={"sparse": SparseVectorParams(modifier=Modifier.IDF)},
     )
 
-    qdrant_client.create_payload_index(
+    retry(qdrant_client.create_payload_index, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="description",
         field_schema=TextIndexParams(
@@ -192,7 +192,7 @@ def main():
         wait=True,
     )
 
-    qdrant_client.create_payload_index(
+    retry(qdrant_client.create_payload_index, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="content",
         field_schema=TextIndexParams(
@@ -205,35 +205,35 @@ def main():
         wait=True,
     )
 
-    qdrant_client.create_payload_index(
+    retry(qdrant_client.create_payload_index, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="url",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
 
-    qdrant_client.create_payload_index(
+    retry(qdrant_client.create_payload_index, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="name",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
 
-    qdrant_client.create_payload_index(
+    retry(qdrant_client.create_payload_index, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="page",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
 
-    qdrant_client.create_payload_index(
+    retry(qdrant_client.create_payload_index, 10)(
         collection_name=SKILLS_COLLECTION_NAME,
         field_name="parent_pages",
         field_schema=PayloadSchemaType.KEYWORD,
         wait=True,
     )
 
-    urls = _all_sitemap_urls(
+    urls = retry(_all_sitemap_urls, 10)(
         "https://skills.qdrant.tech", "https://skills.qdrant.tech/sitemap.xml"
     )
 
@@ -248,7 +248,7 @@ def main():
             if len(result.skills) == 0:
                 continue
 
-            qdrant_client.upsert(
+            retry(qdrant_client.upsert, 10)(
                 SKILLS_COLLECTION_NAME,
                 points=[skill.as_point(SNIPPET_ENCODER) for skill in result.skills],
             )
