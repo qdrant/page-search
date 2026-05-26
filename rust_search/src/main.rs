@@ -5,11 +5,9 @@ mod snippets;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-use std::{borrow::Cow, net::SocketAddr, sync::Arc};
+use std::{borrow::Cow, net::SocketAddr};
 
-use crate::common::{
-    get_embedding, get_qdrant_url, COLLECTION_NAME, MODEL_PATH, PREFIX_COLLECTION_NAME,
-};
+use crate::common::{get_qdrant_url, COLLECTION_NAME, PREFIX_COLLECTION_NAME};
 use actix_cors::Cors;
 use actix_web::{
     get,
@@ -19,22 +17,20 @@ use actix_web::{
     App, HttpResponse, HttpServer,
 };
 use futures::StreamExt;
-use ort::{Environment, Session, SessionBuilder};
 use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::{
-    BatchResult, Condition, Filter, LookupLocationBuilder, PointId, QueryBatchPointsBuilder,
-    QueryPoints, QueryPointsBuilder, RecommendInput, ScoredPoint, Value,
+    BatchResult, Condition, Document, Filter, LookupLocationBuilder, PointId,
+    QueryBatchPointsBuilder, QueryPoints, QueryPointsBuilder, RecommendInput, ScoredPoint, Value,
+    VectorInput,
 };
 use qdrant_client::Qdrant;
-use rust_tokenizers::tokenizer::BertTokenizer;
 use serde::{Deserialize, Serialize};
 
-const VOCAB_PATH: &str = "vocab.txt";
-const SPECIAL_TOKEN_PATH: &str = "special_tokens_map.json";
 const SEARCH_LIMIT: u64 = 5;
 const TEXT_LIMIT: usize = 80;
+const NEURAL_ENCODER: &str = "sentence-transformers/all-MiniLM-L6-v2";
 
 /// Postprocess search response
 ///
@@ -155,11 +151,11 @@ fn get_recommend_query(
 }
 
 fn get_search_query(
-    vector: &[f32],
+    vector: VectorInput,
     conditions: impl IntoIterator<Item = Condition>,
 ) -> QueryPoints {
     QueryPointsBuilder::new(COLLECTION_NAME)
-        .query(vector.to_vec())
+        .query(vector)
         .filter(Filter::must(conditions))
         .limit(SEARCH_LIMIT)
         .with_payload(true)
@@ -247,7 +243,7 @@ async fn search_request(
     section_condition: Option<Condition>,
     partition_condition: Option<Condition>,
     query: &str,
-    vector: Vec<f32>,
+    vector: VectorInput,
 ) -> Result<Vec<ScoredPoint>, HttpResponse> {
     let mut title_text_filter = get_title_text_filter(query);
     let mut body_text_filter = get_body_text_filter(query);
@@ -272,10 +268,10 @@ async fn search_request(
         .query_batch(QueryBatchPointsBuilder::new(
             COLLECTION_NAME,
             vec![
-                get_search_query(&vector, title_text_filter),
-                get_search_query(&vector, body_text_filter),
-                get_search_query(&vector, title_filter),
-                get_search_query(&vector, no_text_filter),
+                get_search_query(vector.clone(), title_text_filter),
+                get_search_query(vector.clone(), body_text_filter),
+                get_search_query(vector.clone(), title_filter),
+                get_search_query(vector.clone(), no_text_filter),
             ],
         ))
         .await
@@ -290,8 +286,6 @@ async fn search_request(
 
 async fn search_or_recommend(
     client: &Qdrant,
-    tokenizer: &BertTokenizer,
-    session: &Session,
     section_condition: Option<Condition>,
     partition_condition: Option<Condition>,
     query: &str,
@@ -300,7 +294,7 @@ async fn search_or_recommend(
     if do_recommend {
         recommend_request(client, section_condition, partition_condition, query).await
     } else {
-        let vector = get_embedding(tokenizer, session, query);
+        let vector = VectorInput::from(Document::new(query, NEURAL_ENCODER));
         search_request(
             client,
             section_condition,
@@ -313,10 +307,7 @@ async fn search_or_recommend(
 }
 
 #[get("/api/search")]
-async fn query_handler(
-    context: Data<(BertTokenizer, Session, Qdrant)>,
-    search: Query<Search>,
-) -> HttpResponse {
+async fn query_handler(context: Data<Qdrant>, search: Query<Search>) -> HttpResponse {
     let time_start = Instant::now();
 
     let Search {
@@ -327,21 +318,32 @@ async fn query_handler(
 
     log::info!("Query: {}", q);
 
-    let (tokenizer, session, qdrant) = context.get_ref();
+    let qdrant = context.get_ref();
 
     let section_condition = if section.is_empty() {
         None
     } else {
-        let sections: Vec<String> = section.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let sections: Vec<String> = section
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         if sections.len() == 1 {
-            Some(Condition::matches("sections", sections.into_iter().next().unwrap()))
+            Some(Condition::matches(
+                "sections",
+                sections.into_iter().next().unwrap(),
+            ))
         } else {
             Some(Condition::matches("sections", sections))
         }
     };
 
     let partition_condition = partition.map(|partition| {
-        let partitions: Vec<String> = partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let partitions: Vec<String> = partition
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         if partitions.len() == 1 {
             Condition::matches("partition", partitions.into_iter().next().unwrap())
         } else {
@@ -354,8 +356,6 @@ async fn query_handler(
     if q.len() < 5 {
         query_stream.push(search_or_recommend(
             qdrant,
-            tokenizer,
-            session,
             section_condition.clone(),
             partition_condition.clone(),
             &q,
@@ -365,8 +365,6 @@ async fn query_handler(
 
     query_stream.push(search_or_recommend(
         qdrant,
-        tokenizer,
-        session,
         section_condition.clone(),
         partition_condition.clone(),
         &q,
@@ -427,18 +425,6 @@ async fn main() -> std::io::Result<()> {
     let qdrant_url = get_qdrant_url();
     let api_key = std::env::var("QDRANT_API_KEY");
     let addr: SocketAddr = uri.parse().expect("malformed URI");
-    let tokenizer = BertTokenizer::from_file_with_special_token_mapping(
-        VOCAB_PATH,
-        true,
-        false,
-        SPECIAL_TOKEN_PATH,
-    )
-    .unwrap();
-    let env = Arc::new(Environment::builder().build().unwrap());
-    let session = SessionBuilder::new(&env)
-        .unwrap()
-        .with_model_from_file(MODEL_PATH)
-        .unwrap();
     let mut builder = Qdrant::from_url(&qdrant_url);
     if let Ok(key) = &api_key {
         builder = builder.api_key(key.clone());
@@ -446,7 +432,6 @@ async fn main() -> std::io::Result<()> {
     let qdrant = builder.build().unwrap();
     qdrant.health_check().await.unwrap();
     let qdrant = Data::new(qdrant);
-    let context = Data::new((tokenizer, session, qdrant.get_ref().clone()));
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
@@ -454,7 +439,6 @@ async fn main() -> std::io::Result<()> {
             .allow_any_header();
 
         App::new()
-            .app_data(context.clone())
             .app_data(qdrant.clone())
             .wrap(cors)
             .wrap(middleware::Logger::default())
