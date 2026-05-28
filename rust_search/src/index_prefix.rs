@@ -1,23 +1,19 @@
 mod common;
 
-use crate::common::{get_embedding, get_qdrant_url, PREFIX_COLLECTION_NAME};
+use crate::common::{get_qdrant_url, PREFIX_COLLECTION_NAME};
 use anyhow::Result;
 use itertools::Itertools;
-use ort::{Environment, SessionBuilder};
 use qdrant_client::qdrant::{
     vectors_config::Config, OptimizersConfigDiff, PointId, PointStruct, VectorParams, Vectors,
     VectorsConfig,
 };
-use qdrant_client::qdrant::{CreateCollection, Distance, UpsertPointsBuilder, Value};
+use qdrant_client::qdrant::{CreateCollection, Distance, Document, UpsertPointsBuilder, Value};
 use qdrant_client::Qdrant;
-use rust_tokenizers::tokenizer::BertTokenizer;
 use std::collections::{HashMap, HashSet};
-use std::{io::Write, sync::Arc};
+use std::io::Write;
 use tokio::main;
 
-const MODEL_PATH: &str = "all-MiniLM-L6-v2.onnx";
-const VOCAB_PATH: &str = "vocab.txt";
-const SPECIAL_TOKEN_PATH: &str = "special_tokens_map.json";
+const NEURAL_ENCODER: &str = "sentence-transformers/all-MiniLM-L6-v2";
 
 fn prefix_to_id(prefix: &str) -> PointId {
     let len = prefix.len();
@@ -52,20 +48,11 @@ async fn main() -> Result<()> {
     println!("{} prefixes found", prefixes.len());
 
     // embed all word prefixes
-    let tokenizer = BertTokenizer::from_file_with_special_token_mapping(
-        VOCAB_PATH,
-        true,
-        false,
-        SPECIAL_TOKEN_PATH,
-    )
-    .unwrap();
-    let env = Arc::new(Environment::builder().build()?);
-    let session = SessionBuilder::new(&env)?.with_model_from_file(MODEL_PATH)?;
     let id = &mut 1_u64;
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
     let points = prefixes.into_iter().map(|prefix| {
-        let vector = get_embedding(&tokenizer, &session, prefix);
+        let vector = Vectors::from(Document::new(prefix, NEURAL_ENCODER));
         if (*id).is_multiple_of(100) {
             write!(stdout, "{id}").unwrap();
         } else {
@@ -78,7 +65,7 @@ async fn main() -> Result<()> {
 
         PointStruct {
             id: Some(prefix_to_id(prefix)),
-            vectors: Some(Vectors::from(vector)),
+            vectors: Some(vector),
             payload,
         }
     });

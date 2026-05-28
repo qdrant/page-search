@@ -1,40 +1,28 @@
 mod common;
 
-use crate::common::{get_embedding, get_qdrant_url, COLLECTION_NAME, MODEL_PATH};
+use crate::common::{get_qdrant_url, COLLECTION_NAME};
 use anyhow::Result;
-use ort::{Environment, SessionBuilder};
 use qdrant_client::{
     qdrant::{
-        vectors_config::Config, CreateCollection, Distance, PointId, PointStruct,
+        vectors_config::Config, CreateCollection, Distance, Document, PointId, PointStruct,
         UpsertPointsBuilder, Value, VectorParams, Vectors, VectorsConfig,
     },
     Qdrant,
 };
-use rust_tokenizers::tokenizer::BertTokenizer;
 use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, Write},
-    sync::Arc,
 };
 use tokio::main;
 
 const SITE_DATA: &str = "../page-search/data/abstracts.jsonl";
-const VOCAB_PATH: &str = "vocab.txt";
-const SPECIAL_TOKEN_PATH: &str = "special_tokens_map.json";
+
+const NEURAL_ENCODER: &str = "sentence-transformers/all-MiniLM-L6-v2";
 
 #[main]
 async fn main() -> Result<()> {
     // embed all word prefixes
-    let tokenizer = BertTokenizer::from_file_with_special_token_mapping(
-        VOCAB_PATH,
-        true,
-        false,
-        SPECIAL_TOKEN_PATH,
-    )
-    .unwrap();
-    let env = Arc::new(Environment::builder().build()?);
-    let session = SessionBuilder::new(&env)?.with_model_from_file(MODEL_PATH)?;
     let id = &mut 1_u64;
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
@@ -44,7 +32,7 @@ async fn main() -> Result<()> {
         let payload: HashMap<String, Value> = serde_json::from_str(&line.unwrap()).unwrap();
         let text = payload.get("text").and_then(Value::as_str).unwrap();
 
-        let vector = get_embedding(&tokenizer, &session, text);
+        let vector = Vectors::from(Document::new(text, NEURAL_ENCODER));
 
         if (*id).is_multiple_of(100) {
             write!(stdout, "{id}").unwrap();
@@ -55,7 +43,7 @@ async fn main() -> Result<()> {
         PointStruct {
             id: Some(PointId::from(std::mem::replace(id, *id + 1))),
             payload,
-            vectors: Some(Vectors::from(vector)),
+            vectors: Some(vector),
         }
     });
 
