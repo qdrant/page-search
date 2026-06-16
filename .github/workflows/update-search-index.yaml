@@ -6,7 +6,7 @@ name: Update search index
 # events but only for the master branch
 on:
   schedule:
-    - cron: "55 23 * * *"
+    - cron: "50 23 * * *"
   workflow_dispatch:
   
 
