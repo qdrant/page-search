@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 import tqdm
 import yaml
+from loguru import logger
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
@@ -22,6 +23,7 @@ from qdrant_client.models import Modifier, PayloadSchemaType, SparseVectorParams
 from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
+from yaml.scanner import ScannerError
 
 from site_search.config import (
     QDRANT_API_KEY,
@@ -93,6 +95,10 @@ def _parse_frontmatter(content: str) -> _SkillMetadata | None:
             break
         front_lines.append(line)
     frontmatter = "\n".join(front_lines)
+
+    # while 'someone\'s string' works in markdown, it confuses the yaml parser
+    frontmatter = frontmatter.replace(r"\'", r"\\'")
+
     metadata = yaml.safe_load(frontmatter)
     metadata["content"] = "\n".join(lines[i:])
     return _SkillMetadata.parse_obj(metadata)
@@ -112,7 +118,11 @@ def _parse_markdown(url: str) -> _ParsingResult:
 
     document = resp.text
 
-    metadata = _parse_frontmatter(document)
+    try:
+        metadata = _parse_frontmatter(document)
+    except ScannerError:
+        logger.error(f"{url=} has invalid frontmatter.")
+        raise
     if metadata is None:
         return _ParsingResult(skills=[], url=url)
 

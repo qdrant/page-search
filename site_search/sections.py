@@ -1,12 +1,13 @@
 import concurrent.futures
-from itertools import accumulate
 import hashlib
 import re
 import uuid
+from itertools import accumulate
 from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
+from loguru import logger
 from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel
@@ -100,6 +101,10 @@ def _parse_markdown(url: str) -> _ParsingResult:
         for node in root.children
         if node.type == "heading"
     ]
+
+    if len(headings) == 0:
+        logger.warning(f"No headings found in {url}, skipping.")
+        return _ParsingResult(sections=[], url=url)
 
     if headings[0].line != 0:
         headings.insert(0, _Heading(tag="h1", line=0, title=""))
