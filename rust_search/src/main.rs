@@ -1,4 +1,5 @@
 mod common;
+mod redirects;
 mod sections;
 mod skills;
 mod snippets;
@@ -432,6 +433,12 @@ async fn main() -> std::io::Result<()> {
     let qdrant = builder.build().unwrap();
     qdrant.health_check().await.unwrap();
     let qdrant = Data::new(qdrant);
+
+    // Load the qdrant.tech redirect table so `/md/` misses can be answered with
+    // the same 301 the live site gives, then keep it refreshed in the background.
+    let redirects = Data::new(redirects::RedirectStore::new());
+    redirects::spawn_refresh(redirects.clone().into_inner());
+
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
@@ -440,6 +447,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(qdrant.clone())
+            .app_data(redirects.clone())
             .wrap(cors)
             .wrap(middleware::Logger::default())
             .service(query_handler)
