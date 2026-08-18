@@ -441,7 +441,9 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(qdrant.clone())
             .wrap(cors)
-            .wrap(middleware::Logger::default())
+            .wrap(middleware::Logger::new(
+                "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T \"%{X-Forwarded-For}i\"",
+            ))
             .service(query_handler)
             .service(sections::md_handler)
             .service(skills::skills_handler)
