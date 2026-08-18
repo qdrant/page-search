@@ -441,6 +441,9 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(qdrant.clone())
             .wrap(cors)
+            // Actix's default Logger format plus one appended field (client IP from the
+            // reverse-proxy hop). Field order is load-bearing for a downstream parser: append
+            // new fields, never reorder or insert, or that parser breaks.
             .wrap(middleware::Logger::new(
                 "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T \"%{X-Forwarded-For}i\"",
             ))
