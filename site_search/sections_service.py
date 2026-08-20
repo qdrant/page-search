@@ -9,12 +9,16 @@ from qdrant_client.http.models import (
     Document,
     FieldCondition,
     Filter,
+    Fusion,
+    FusionQuery,
     MatchValue,
+    Prefetch,
 )
 from starlette.datastructures import URL
 
 from site_search.config import (
     NEURAL_ENCODER,
+    SECTIONS_SPARSE_ENCODER,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
@@ -116,13 +120,41 @@ class SectionSearcher:
                     sections=[Section.parse_obj(p.payload) for p in result.points]
                 )
             
-            # If no results, fallback to approximate search
-            result = self.client.query_points(
-                SECTION_COLLECTION_NAME,
-                query=Document(text=query, model=NEURAL_ENCODER),
-                query_filter=Filter(must=conditions),
-                limit=SECTIONS_SEARCH_LIMIT,
-            )
+            # If no results, fall back to hybrid search: dense (semantic) + bm25 (lexical),
+            # RRF-fused. Dense-only ranking loses to vocabulary collisions -- e.g. a query
+            # using the Recommend API's own words ("positive and negative examples") can rank
+            # a topically-similar tutorial above the API reference, and "what distance
+            # metrics ..." can rank the monitoring-metrics page above the collections page.
+            # The lexical channel anchors exact terminology; RRF keeps semantic recall.
+            try:
+                result = self.client.query_points(
+                    SECTION_COLLECTION_NAME,
+                    prefetch=[
+                        Prefetch(
+                            query=Document(text=query, model=NEURAL_ENCODER),
+                            using="",
+                            filter=Filter(must=conditions),
+                            limit=SECTIONS_SEARCH_LIMIT * 5,
+                        ),
+                        Prefetch(
+                            query=Document(text=query, model=SECTIONS_SPARSE_ENCODER),
+                            using="bm25",
+                            filter=Filter(must=conditions),
+                            limit=SECTIONS_SEARCH_LIMIT * 5,
+                        ),
+                    ],
+                    query=FusionQuery(fusion=Fusion.RRF),
+                    limit=SECTIONS_SEARCH_LIMIT,
+                )
+            except Exception:
+                # Collection indexed before the bm25 sparse vectors existed: keep serving
+                # dense-only until the next crawl recreates it with the hybrid schema.
+                result = self.client.query_points(
+                    SECTION_COLLECTION_NAME,
+                    query=Document(text=query, model=NEURAL_ENCODER),
+                    query_filter=Filter(must=conditions),
+                    limit=SECTIONS_SEARCH_LIMIT,
+                )
             return SectionSearchResult(
                 sections=[Section.parse_obj(p.payload) for p in result.points]
             )

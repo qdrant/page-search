@@ -21,7 +21,7 @@ from qdrant_client.http.models import (
     TokenizerType,
     VectorParams,
 )
-from qdrant_client.models import PayloadSchemaType
+from qdrant_client.models import Modifier, PayloadSchemaType, SparseVectorParams
 from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
@@ -65,11 +65,15 @@ class Section(BaseModel):
         # Use the first 16 bytes of the hash to create a UUID
         return str(uuid.UUID(bytes=content_hash[:16]))
 
-    def as_point(self, model: str) -> PointStruct:
+    def as_point(self, model: str, sparse_model: str | None = None) -> PointStruct:
+        vector = Document(text=self.content, model=model)
+        if sparse_model is not None:
+            # "" is the default (unnamed) dense vector; bm25 rides alongside for hybrid search
+            vector = {"": vector, "bm25": Document(text=self.content, model=sparse_model)}
         return PointStruct(
             id=self.uuid,
             payload=self.metadata,
-            vector=Document(text=self.content, model=model),
+            vector=vector,
         )
 
 
@@ -208,6 +212,10 @@ def main():
             size=qdrant_client.get_embedding_size(NEURAL_ENCODER),
             distance=Distance.COSINE,
         ),
+        # bm25 sparse vectors alongside the dense ones: purely-semantic ranking loses to
+        # vocabulary collisions (a query naming an exact API term can rank a topically-similar
+        # tutorial above the reference page); hybrid dense+bm25 with RRF fixes that class.
+        sparse_vectors_config={"bm25": SparseVectorParams(modifier=Modifier.IDF)},
     )
 
     qdrant_client.create_payload_index(
@@ -274,7 +282,8 @@ def main():
             qdrant_client.upsert(
                 SECTION_COLLECTION_NAME,
                 points=[
-                    section.as_point(NEURAL_ENCODER) for section in result.sections
+                    section.as_point(NEURAL_ENCODER, SECTIONS_SPARSE_ENCODER)
+                    for section in result.sections
                 ],
             )
 
