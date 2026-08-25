@@ -1,8 +1,11 @@
 use actix_web::web::{Data, Query};
 use actix_web::{get, HttpRequest, HttpResponse};
+use std::collections::BTreeSet;
+
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::{
-    Condition, Document, FacetCountsBuilder, Filter, QueryPointsBuilder, ScoredPoint, VectorInput,
+    value::Kind, Condition, Document, Filter, PayloadIncludeSelector, PointId, QueryPointsBuilder,
+    ScoredPoint, ScrollPointsBuilder, VectorInput,
 };
 use qdrant_client::Qdrant;
 use serde::Deserialize;
@@ -23,6 +26,14 @@ fn sections_search_limit() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(10)
+}
+
+/// Batch size used when scrolling through points to enumerate sub-pages.
+fn sublinks_scroll_batch() -> u32 {
+    std::env::var("SECTIONS_SCROLL_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
 }
 
 fn parse_sections(points: Vec<ScoredPoint>) -> Vec<Section> {
@@ -119,37 +130,53 @@ async fn search_by_query(
     })
 }
 
+/// Scroll every point under `path` to enumerate its distinct sub-pages in full (issue #30).
 async fn fetch_sublinks(client: &Qdrant, path: &str) -> anyhow::Result<Vec<String>> {
-    let facet_result = client
-        .facet(
-            FacetCountsBuilder::new(SECTION_COLLECTION_NAME, "page")
-                .filter(Filter {
-                    must: vec![Condition::matches(
-                        "parent_pages",
-                        MatchValue::Keyword(path.to_string()),
-                    )],
-                    must_not: vec![Condition::matches(
-                        "page",
-                        MatchValue::Keyword(path.to_string()),
-                    )],
-                    ..Default::default()
-                })
-                .limit(sections_exact_limit()),
-        )
-        .await?;
+    let filter = Filter {
+        must: vec![Condition::matches(
+            "parent_pages",
+            MatchValue::Keyword(path.to_string()),
+        )],
+        must_not: vec![Condition::matches(
+            "page",
+            MatchValue::Keyword(path.to_string()),
+        )],
+        ..Default::default()
+    };
 
-    let mut links: Vec<String> = facet_result
-        .hits
-        .into_iter()
-        .filter_map(|hit| {
-            hit.value.and_then(|v| match v.variant? {
-                qdrant_client::qdrant::facet_value::Variant::StringValue(s) => Some(s),
-                _ => None,
+    let batch = sublinks_scroll_batch();
+    let mut pages: BTreeSet<String> = BTreeSet::new();
+    let mut offset: Option<PointId> = None;
+
+    loop {
+        let mut builder = ScrollPointsBuilder::new(SECTION_COLLECTION_NAME)
+            .filter(filter.clone())
+            .limit(batch)
+            .with_payload(PayloadIncludeSelector {
+                fields: vec!["page".to_string()],
             })
-        })
-        .collect();
-    links.sort();
-    Ok(links)
+            .with_vectors(false);
+        if let Some(o) = offset.take() {
+            builder = builder.offset(o);
+        }
+
+        let response = client.scroll(builder).await?;
+
+        for point in response.result {
+            if let Some(Kind::StringValue(page)) =
+                point.payload.get("page").and_then(|v| v.kind.clone())
+            {
+                pages.insert(page);
+            }
+        }
+
+        match response.next_page_offset {
+            Some(next) => offset = Some(next),
+            None => break,
+        }
+    }
+
+    Ok(pages.into_iter().collect())
 }
 
 async fn browse_sections(
