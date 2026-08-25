@@ -105,6 +105,7 @@ async fn search_by_query(
     client: &Qdrant,
     query: &str,
     conditions: Vec<Condition>,
+    exact_limit: u64,
 ) -> anyhow::Result<SectionSearchResult> {
     // Try exact slug match first
     let slug = slugify_heading(query);
@@ -114,7 +115,7 @@ async fn search_by_query(
         MatchValue::Keyword(slug),
     ));
 
-    let points = query_by_filter(client, exact_conditions, sections_exact_limit()).await?;
+    let points = query_by_filter(client, exact_conditions, exact_limit).await?;
     if !points.is_empty() {
         return Ok(SectionSearchResult {
             sections: parse_sections(points),
@@ -184,8 +185,9 @@ async fn browse_sections(
     path: &str,
     section: Option<&str>,
     conditions: Vec<Condition>,
+    exact_limit: u64,
 ) -> anyhow::Result<Option<SectionSearchResult>> {
-    let points = query_by_filter(client, conditions, sections_exact_limit()).await?;
+    let points = query_by_filter(client, conditions, exact_limit).await?;
     let sections = parse_sections(points);
 
     let sublinks = if section.is_none() {
@@ -209,13 +211,17 @@ async fn search_sections(
     query: Option<&str>,
     path: &str,
     section: Option<&str>,
+    limit: Option<u64>,
 ) -> anyhow::Result<Option<SectionSearchResult>> {
     let clean_path = path.trim_matches('/');
     let conditions = build_conditions(clean_path, query, section);
+    let exact_limit = limit.unwrap_or_else(sections_exact_limit);
 
     match query {
-        Some(q) => Ok(Some(search_by_query(client, q, conditions).await?)),
-        None => browse_sections(client, clean_path, section, conditions).await,
+        Some(q) => Ok(Some(
+            search_by_query(client, q, conditions, exact_limit).await?,
+        )),
+        None => browse_sections(client, clean_path, section, conditions, exact_limit).await,
     }
 }
 
@@ -223,6 +229,7 @@ async fn search_sections(
 struct MdSearch {
     q: Option<String>,
     s: Option<String>,
+    limit: Option<u64>,
 }
 
 #[get("/md/{path:.*}")]
@@ -240,6 +247,7 @@ pub async fn md_handler(
         query.q.as_deref(),
         &path_str,
         query.s.as_deref(),
+        query.limit,
     )
     .await;
 
