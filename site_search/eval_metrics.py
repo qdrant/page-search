@@ -4,10 +4,15 @@ No network calls and no Qdrant client live here, so this module is unit-testable
 with synthetic data. Everything that touches I/O belongs in site_search/eval.py.
 """
 
+import os
 from typing import Iterable, NamedTuple
 from urllib.parse import urlparse
 
 VALID_KINDS = ("keyword", "natural", "typo", "navigational")
+
+# Hidden anchor used by the PR workflow to find and update its own comment
+# rather than posting a new one on every run.
+MARKER = "<!-- docs-search-eval -->"
 
 # Results are always compared at 5: the service returns at most 5 hits
 # (SEARCH_LIMIT in rust_search/src/main.rs:31).
@@ -114,3 +119,77 @@ def gate_failures(endpoint: Metrics, zero_result_ids: list[str], floor: float) -
             + ", ".join(sorted(zero_result_ids))
         )
     return failures
+
+
+def _run_url() -> str | None:
+    """Link back to the workflow run, when running inside GitHub Actions."""
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return None
+
+
+def render_markdown(report: dict) -> str:
+    endpoint = report["endpoint"]
+    dense = report.get("dense")
+    passed = not report["failures"]
+
+    # MARKER makes the PR comment sticky: the workflow finds the previous
+    # comment by this string and edits it instead of posting a new one.
+    lines = [
+        MARKER,
+        "## Docs search eval",
+        "",
+        f"{'✅ PASS' if passed else '❌ FAIL'} — endpoint hit-rate@5 "
+        f"**{endpoint['hit_rate']:.3f}** vs floor {report['floor']:.3f}",
+        "",
+    ]
+
+    run_url = _run_url()
+    if run_url:
+        lines += [f"[workflow run]({run_url})", ""]
+
+    dense_row = (
+        f"| dense only | {dense['n']} | {dense['hit_rate']:.3f} | {dense['mrr']:.3f} |"
+        if dense
+        else "| dense only | — | _not measured (no cluster credentials)_ | — |"
+    )
+    lines += [
+        "| layer | n | hit-rate@5 | MRR@5 |",
+        "| --- | --- | --- | --- |",
+        f"| endpoint | {endpoint['n']} | {endpoint['hit_rate']:.3f} | {endpoint['mrr']:.3f} |",
+        dense_row,
+        "",
+        "| kind | n | endpoint hit-rate@5 | endpoint MRR@5 | dense hit-rate@5 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for kind in sorted(report["endpoint_by_kind"]):
+        e = report["endpoint_by_kind"][kind]
+        by_kind = report.get("dense_by_kind") or {}
+        d = by_kind.get(kind)
+        dense_cell = f"{d['hit_rate']:.3f}" if d else "—"
+        lines.append(
+            f"| {kind} | {e['n']} | {e['hit_rate']:.3f} | {e['mrr']:.3f} | {dense_cell} |"
+        )
+
+    corpus = report.get("corpus_size")
+    lines += [
+        "",
+        f"corpus: {f'{corpus} points' if corpus is not None else 'not measured'} · "
+        f"max latency: {report['max_latency_ms']} ms · "
+        f"floor: {report['floor']:.3f}",
+        "",
+    ]
+
+    misses = [c for c in report["cases"] if not c["endpoint_hit"]]
+    if misses:
+        lines += ["### Endpoint misses", "", "| id | query | expected |", "| --- | --- | --- |"]
+        lines += [f"| {c['id']} | `{c['q']}` | {c['primary']} |" for c in misses]
+        lines.append("")
+
+    if report["failures"]:
+        lines += ["### Failures", ""] + [f"- {f}" for f in report["failures"]] + [""]
+
+    return "\n".join(lines)

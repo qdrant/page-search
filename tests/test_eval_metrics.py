@@ -148,3 +148,51 @@ def test_gate_reports_both_failures():
 
 def test_gate_floor_is_inclusive():
     assert gate_failures(Metrics(n=40, hit_rate=0.8, mrr=0.7), [], 0.8) == []
+
+
+from site_search.eval_metrics import MARKER, render_markdown
+
+
+def _report(hit_rate=0.9, failures=(), dense=True):
+    """Minimal report dict shaped like site_search.eval.run() output."""
+    return {
+        "endpoint": {"n": 40, "hit_rate": hit_rate, "mrr": 0.5},
+        "dense": {"n": 40, "hit_rate": 0.6, "mrr": 0.4} if dense else None,
+        "endpoint_by_kind": {"keyword": {"n": 12, "hit_rate": 0.9, "mrr": 0.5}},
+        "dense_by_kind": {"keyword": {"n": 12, "hit_rate": 0.6, "mrr": 0.4}} if dense else None,
+        "dense_measured": dense,
+        "corpus_size": 12345 if dense else None,
+        "max_latency_ms": 940,
+        "zero_result_ids": [],
+        "floor": 0.70,
+        "failures": list(failures),
+        "cases": [],
+    }
+
+
+def test_render_starts_with_sticky_marker():
+    # The PR workflow finds its previous comment by this exact string.
+    assert render_markdown(_report()).startswith(MARKER)
+
+
+def test_render_shows_pass_when_no_failures():
+    out = render_markdown(_report(hit_rate=0.9))
+    assert "PASS" in out
+    assert "FAIL" not in out
+
+
+def test_render_shows_fail_when_gated():
+    out = render_markdown(_report(hit_rate=0.6, failures=["endpoint hit-rate@5 0.600 is below floor 0.700"]))
+    assert "FAIL" in out
+    assert "0.600" in out
+
+
+def test_render_without_dense_says_not_measured():
+    out = render_markdown(_report(dense=False))
+    assert "not measured" in out
+    assert "corpus: not measured" in out
+
+
+def test_render_without_dense_has_no_crash_and_keeps_kind_table():
+    out = render_markdown(_report(dense=False))
+    assert "| keyword |" in out

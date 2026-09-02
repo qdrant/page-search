@@ -32,8 +32,16 @@ from site_search.eval_metrics import (
     gate_failures,
     hit_at_5,
     reciprocal_rank,
+    render_markdown,
     result_urls,
 )
+
+# NEURAL_ENCODER is imported from site_search.config (config.py:18) rather than
+# redeclared, so the indexer and the eval can never drift onto different models.
+# It must also match rust_search/src/main.rs:33. The service does not embed
+# locally either: main.rs:298 hands Qdrant a Document and lets server-side
+# inference produce the vector, so going through models.Document here means the
+# baseline uses the same embedding path rather than a local near-miss.
 
 SEARCH_API = "https://search.qdrant.tech/api/search"
 CASES_PATH = os.path.join(os.path.dirname(__file__), "eval_cases.yaml")
@@ -57,13 +65,6 @@ def query_endpoint(case: dict, timeout: float = 10.0) -> tuple[list[str], float]
     response.raise_for_status()
     return result_urls(response.json()), elapsed
 
-
-# NEURAL_ENCODER comes from site_search.config (config.py:18) rather than being
-# redeclared here, so the indexer and the eval can never drift onto different
-# models. It must also match rust_search/src/main.rs:33. The service does not
-# embed locally either: main.rs:298 hands Qdrant a Document and lets server-side
-# inference produce the vector, so going through models.Document here means the
-# baseline uses the same embedding path rather than a local near-miss.
 
 
 def make_client() -> QdrantClient:
@@ -125,22 +126,40 @@ def _score(urls: list[str], case: dict) -> dict:
     }
 
 
+def dense_enabled() -> bool:
+    """Whether the dense baseline can run.
+
+    Checks os.environ directly rather than the imported QDRANT_HOST, because
+    config.py defaults that constant to 'localhost' when the variable is unset —
+    so the constant is never falsy and cannot be used to detect absence.
+
+    Without credentials the endpoint half still works and is what gates CI, so a
+    missing cluster degrades the report instead of crashing it. That covers fork
+    PRs, which receive no secrets, and local runs.
+    """
+    return bool(os.environ.get("QDRANT_HOST"))
+
+
 def run(cases: list[dict]) -> dict:
-    """Execute every case against both layers and return the full report."""
-    client = make_client()
+    """Execute every case against the endpoint, and the dense baseline if available."""
+    dense_on = dense_enabled()
+    client = make_client() if dense_on else None
     endpoint_rows, dense_rows, per_case, latencies, zero_result_ids = [], [], [], [], []
 
     for case in cases:
         endpoint_urls, elapsed = query_endpoint(case)
-        dense_urls = query_dense(client, case)
         latencies.append(elapsed)
         if not endpoint_urls:
             zero_result_ids.append(case["id"])
 
         endpoint_score = _score(endpoint_urls, case)
-        dense_score = _score(dense_urls, case)
         endpoint_rows.append(endpoint_score)
-        dense_rows.append(dense_score)
+
+        dense_score = None
+        if dense_on:
+            dense_score = _score(query_dense(client, case), case)
+            dense_rows.append(dense_score)
+
         per_case.append(
             {
                 "id": case["id"],
@@ -149,67 +168,30 @@ def run(cases: list[dict]) -> dict:
                 "primary": case["primary"],
                 "endpoint_hit": endpoint_score["hit"],
                 "endpoint_rr": round(endpoint_score["rr"], 4),
-                "dense_hit": dense_score["hit"],
+                "dense_hit": dense_score["hit"] if dense_score else None,
                 "endpoint_urls": endpoint_urls,
                 "latency_ms": round(elapsed * 1000),
             }
         )
 
     endpoint = aggregate(endpoint_rows)
-    dense = aggregate(dense_rows)
     return {
         "endpoint": endpoint._asdict(),
-        "dense": dense._asdict(),
+        "dense": aggregate(dense_rows)._asdict() if dense_on else None,
         "endpoint_by_kind": {k: m._asdict() for k, m in aggregate_by_kind(endpoint_rows).items()},
-        "dense_by_kind": {k: m._asdict() for k, m in aggregate_by_kind(dense_rows).items()},
-        "corpus_size": corpus_size(client),
+        "dense_by_kind": (
+            {k: m._asdict() for k, m in aggregate_by_kind(dense_rows).items()}
+            if dense_on
+            else None
+        ),
+        "dense_measured": dense_on,
+        "corpus_size": corpus_size(client) if dense_on else None,
         "max_latency_ms": round(max(latencies) * 1000) if latencies else 0,
         "zero_result_ids": zero_result_ids,
         "floor": HIT_RATE_FLOOR,
         "failures": gate_failures(endpoint, zero_result_ids, HIT_RATE_FLOOR),
         "cases": per_case,
     }
-
-
-def render_markdown(report: dict) -> str:
-    lines = ["## Docs search eval", ""]
-    endpoint = report["endpoint"]
-    dense = report["dense"]
-
-    lines += [
-        "| layer | n | hit-rate@5 | MRR@5 |",
-        "| --- | --- | --- | --- |",
-        f"| endpoint | {endpoint['n']} | {endpoint['hit_rate']:.3f} | {endpoint['mrr']:.3f} |",
-        f"| dense only | {dense['n']} | {dense['hit_rate']:.3f} | {dense['mrr']:.3f} |",
-        "",
-        "| kind | n | endpoint hit-rate@5 | endpoint MRR@5 | dense hit-rate@5 |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for kind in sorted(report["endpoint_by_kind"]):
-        e = report["endpoint_by_kind"][kind]
-        d = report["dense_by_kind"][kind]
-        lines.append(
-            f"| {kind} | {e['n']} | {e['hit_rate']:.3f} | {e['mrr']:.3f} | {d['hit_rate']:.3f} |"
-        )
-
-    lines += [
-        "",
-        f"corpus: {report['corpus_size']} points · "
-        f"max latency: {report['max_latency_ms']} ms · "
-        f"floor: {report['floor']:.3f}",
-        "",
-    ]
-
-    misses = [c for c in report["cases"] if not c["endpoint_hit"]]
-    if misses:
-        lines += ["### Endpoint misses", "", "| id | query | expected |", "| --- | --- | --- |"]
-        lines += [f"| {c['id']} | `{c['q']}` | {c['primary']} |" for c in misses]
-        lines.append("")
-
-    if report["failures"]:
-        lines += ["### Failures", ""] + [f"- {f}" for f in report["failures"]] + [""]
-
-    return "\n".join(lines)
 
 
 def main(argv=None) -> int:
