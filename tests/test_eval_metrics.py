@@ -150,7 +150,7 @@ def test_gate_floor_is_inclusive():
     assert gate_failures(Metrics(n=40, hit_rate=0.8, mrr=0.7), [], 0.8) == []
 
 
-from site_search.eval_metrics import MARKER, render_markdown
+from site_search.eval_metrics import render_markdown
 
 
 def _report(hit_rate=0.9, failures=(), dense=True):
@@ -170,9 +170,9 @@ def _report(hit_rate=0.9, failures=(), dense=True):
     }
 
 
-def test_render_starts_with_sticky_marker():
-    # The PR workflow finds its previous comment by this exact string.
-    assert render_markdown(_report()).startswith(MARKER)
+def test_render_starts_with_heading():
+    # Stickiness is the action's job now; the body starts with the heading.
+    assert render_markdown(_report()).startswith("## Docs search eval")
 
 
 def test_render_shows_pass_when_no_failures():

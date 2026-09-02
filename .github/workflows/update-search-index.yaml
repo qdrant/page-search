@@ -81,7 +81,7 @@ jobs:
     # than a full poetry install, which drags in scipy, fastembed and openai
     # for code that needs none of them.
     - name: install deps
-      run: pip install qdrant-client==1.17.1 requests pyyaml
+      run: pip install qdrant-client==1.17.1 requests pyyaml python-dotenv
 
     - name: run search evals
       run: python -m site_search.eval --summary "$GITHUB_STEP_SUMMARY" --json eval-results.json

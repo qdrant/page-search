@@ -10,10 +10,6 @@ from urllib.parse import urlparse
 
 VALID_KINDS = ("keyword", "natural", "typo", "navigational")
 
-# Hidden anchor used by the PR workflow to find and update its own comment
-# rather than posting a new one on every run.
-MARKER = "<!-- docs-search-eval -->"
-
 # Results are always compared at 5: the service returns at most 5 hits
 # (SEARCH_LIMIT in rust_search/src/main.rs:31).
 CUTOFF = 5
@@ -136,10 +132,9 @@ def render_markdown(report: dict) -> str:
     dense = report.get("dense")
     passed = not report["failures"]
 
-    # MARKER makes the PR comment sticky: the workflow finds the previous
-    # comment by this string and edits it instead of posting a new one.
+    # Comment stickiness is handled by the sticky-pull-request-comment action's
+    # own hidden header, so no marker is needed in this body.
     lines = [
-        MARKER,
         "## Docs search eval",
         "",
         f"{'✅ PASS' if passed else '❌ FAIL'} — endpoint hit-rate@5 "
