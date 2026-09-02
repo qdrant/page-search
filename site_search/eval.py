@@ -20,6 +20,7 @@ from qdrant_client import QdrantClient, models
 
 from site_search.config import (
     COLLECTION_NAME,
+    NEURAL_ENCODER,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
@@ -57,11 +58,12 @@ def query_endpoint(case: dict, timeout: float = 10.0) -> tuple[list[str], float]
     return result_urls(response.json()), elapsed
 
 
-# Must match rust_search/src/main.rs:33 exactly. The service does not embed
-# locally either: main.rs:298 hands Qdrant a Document and lets server-side
-# inference produce the vector, so going through models.Document here means our
+# NEURAL_ENCODER comes from site_search.config (config.py:18) rather than being
+# redeclared here, so the indexer and the eval can never drift onto different
+# models. It must also match rust_search/src/main.rs:33. The service does not
+# embed locally either: main.rs:298 hands Qdrant a Document and lets server-side
+# inference produce the vector, so going through models.Document here means the
 # baseline uses the same embedding path rather than a local near-miss.
-NEURAL_ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def make_client() -> QdrantClient:
