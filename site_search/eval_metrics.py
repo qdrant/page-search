@@ -8,8 +8,6 @@ import os
 from typing import Iterable, NamedTuple
 from urllib.parse import urlparse
 
-VALID_KINDS = ("keyword", "natural", "typo", "navigational")
-
 # Payload URLs are site-relative; this makes them clickable in reports.
 SITE_ROOT = "https://qdrant.tech"
 
@@ -52,8 +50,8 @@ def normalize_url(url: str) -> str:
 def hit_at_5(urls: list[str], primary: str, acceptable: Iterable[str] = ()) -> bool:
     """True if primary or any acceptable URL appears in the first CUTOFF results.
 
-    The parameter is named `urls`, not `result_urls`, to avoid shadowing the
-    module-level `result_urls()` parser added in Task 3.
+    The parameter is named `urls`, not `result_urls`, so it does not shadow the
+    module-level `result_urls()` parser.
     """
     targets = {normalize_url(primary)}
     targets.update(normalize_url(u) for u in acceptable)
@@ -161,7 +159,7 @@ def render_markdown(report: dict) -> str:
         lines += [f"[workflow run]({run_url})", ""]
 
     lines += [
-        f"| kind | n | hit-rate@5 | MRR@5 |",
+        "| kind | n | hit-rate@5 | MRR@5 |",
         "| --- | --- | --- | --- |",
         f"| **overall** | {endpoint['n']} | **{endpoint['hit_rate']:.3f}** "
         f"| **{endpoint['mrr']:.3f}** |",
@@ -172,7 +170,7 @@ def render_markdown(report: dict) -> str:
 
     lines += [
         "",
-        f"max latency: {report['max_latency_ms']} ms · floor: {report['floor']:.3f}",
+        f"max latency: {report['max_latency_ms']} ms",
         "",
     ]
 
