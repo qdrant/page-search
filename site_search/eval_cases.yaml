@@ -1,0 +1,322 @@
+# Golden query set for docs search evals.
+#
+# Labeling rule:
+#   primary    = the page a docs maintainer would send someone to.
+#   acceptable = a page that also genuinely answers the question.
+#   If primary is not decidable, the case is ambiguous and does not belong here.
+#
+# section/partition are uniform across all cases on purpose: they reproduce the
+# search context a user gets on any develop/deploy docs page. The widget widens
+# develop|deploy into "develop,deploy,cloud,qdrant" before calling the API, so
+# sending a bare partition would test a filter combination no user ever sees.
+#
+# kind drives the per-bucket split in the report. Do not add a case whose
+# expected page lives in the `ecosystem` partition: it is unreachable from this
+# search context and would be permanently red.
+
+# ---------- keyword: short exact-ish terms, the lexical-match path ----------
+- id: binary-quantization
+  q: "binary quantization"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/quantization/
+  acceptable:
+    - /articles/binary-quantization/
+  kind: keyword
+
+- id: scalar-quantization
+  q: "scalar quantization"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/quantization/
+  kind: keyword
+
+- id: payload-filtering
+  q: "payload filtering"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/search/filtering/
+  acceptable:
+    - /articles/vector-search-filtering/
+  kind: keyword
+
+- id: hnsw-index
+  q: "hnsw index"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/indexing/
+  kind: keyword
+
+- id: sparse-vectors
+  q: "sparse vectors"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/vectors/
+  acceptable:
+    - /articles/sparse-vectors/
+  kind: keyword
+
+- id: multitenancy
+  q: "multitenancy"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/multitenancy/
+  kind: keyword
+
+- id: consistency-guarantees
+  q: "consistency guarantees"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/scaling/consistency-guarantees/
+  kind: keyword
+
+- id: optimizer
+  q: "optimizer"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/ops-optimization/optimizer/
+  kind: keyword
+
+- id: shard-key
+  q: "shard key"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/scaling/distributed_deployment/
+  kind: keyword
+
+- id: on-disk-storage
+  q: "on disk vector storage"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/storage/
+  kind: keyword
+
+- id: full-text-search
+  q: "full text search"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/search/text-search/full-text-search/
+  kind: keyword
+
+- id: api-key
+  q: "api key"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/security/
+  kind: keyword
+
+# ---------- natural: full questions, the dense path ----------
+- id: reduce-memory
+  q: "how do I reduce memory usage"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/faq/database-optimization/
+  kind: natural
+
+- id: create-collection
+  q: "how to create a collection"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/collections/
+  kind: natural
+
+- id: combine-dense-sparse
+  q: "how do I combine dense and sparse search"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/search/hybrid-queries/
+  acceptable:
+    - /documentation/search/text-search/hybrid-search/
+    - /articles/hybrid-search/
+  kind: natural
+
+- id: upload-many-vectors
+  q: "fastest way to upload a lot of vectors"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/bulk-upload/
+  kind: natural
+
+- id: add-node
+  q: "how do I add a node to my cluster"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/scaling/horizontal-scaling/
+  kind: natural
+
+- id: back-up-data
+  q: "how do I back up my data"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/snapshots/
+  acceptable:
+    - /documentation/cloud/backups/
+  kind: natural
+
+- id: search-is-slow
+  q: "why is my search slow"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/search/low-latency-search/
+  acceptable:
+    - /documentation/faq/database-optimization/
+  kind: natural
+
+- id: what-is-vector-db
+  q: "what is a vector database"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/overview/what-is-qdrant/
+  acceptable:
+    - /documentation/overview/vector-search/
+  kind: natural
+
+- id: monitor-prometheus
+  q: "how do I monitor qdrant with prometheus"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/ops-monitoring/monitoring/
+  kind: natural
+
+- id: gpu-indexing
+  q: "can I use a GPU for indexing"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/ops-configuration/running-with-gpu/
+  acceptable:
+    - /documentation/tutorials-operations/gpu-accelerated-hnsw-indexing/
+  kind: natural
+
+- id: node-fails
+  q: "what happens when a node fails"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/scaling/node-failure-recovery/
+  acceptable:
+    - /documentation/scaling/resilience/
+  kind: natural
+
+- id: rerank-results
+  q: "how do I rerank results"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/tutorials-basics/reranking-hybrid-search/
+  kind: natural
+
+- id: configure-qdrant
+  q: "how do I change configuration settings"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/ops-configuration/configuration/
+  kind: natural
+
+- id: embeddings-in-qdrant
+  q: "can qdrant create embeddings for me"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/inference/cloud-inference/
+  acceptable:
+    - /documentation/inference/
+  kind: natural
+
+# ---------- typo: prefix tokenizer + dense fallback under misspelling ----------
+- id: typo-quantizaton
+  q: "quantizaton"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/quantization/
+  kind: typo
+
+- id: typo-colection
+  q: "colection"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/collections/
+  kind: typo
+
+- id: typo-multitenency
+  q: "multitenency"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/manage-data/multitenancy/
+  kind: typo
+
+- id: typo-filterring
+  q: "filterring"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/search/filtering/
+  kind: typo
+
+- id: typo-snaphot
+  q: "snaphot"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/snapshots/
+  kind: typo
+
+- id: typo-distirbuted
+  q: "distirbuted deployment"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/scaling/distributed_deployment/
+  kind: typo
+
+# ---------- navigational: user hunting one specific page ----------
+- id: nav-quickstart
+  q: "quickstart"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/quickstart/
+  kind: navigational
+
+- id: nav-installation
+  q: "installation"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/installation/
+  kind: navigational
+
+- id: nav-rest-api
+  q: "rest api"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/interfaces/
+  kind: navigational
+
+- id: nav-cloud-quickstart
+  q: "cloud quickstart"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/cloud-quickstart/
+  kind: navigational
+
+- id: nav-create-cluster
+  q: "create cluster"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/cloud/create-cluster/
+  kind: navigational
+
+- id: nav-memory-tiers
+  q: "memory tiers"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/ops-configuration/memory-tiers/
+  kind: navigational
+
+- id: nav-snapshots
+  q: "snapshots"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/snapshots/
+  kind: navigational
+
+- id: nav-qdrant-edge
+  q: "qdrant edge"
+  section: documentation
+  partition: develop,deploy,cloud,qdrant
+  primary: /documentation/edge/
+  acceptable:
+    - /documentation/edge/edge-quickstart/
+  kind: navigational
