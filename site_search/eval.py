@@ -4,12 +4,9 @@ Measures the live search endpoint against a hand-labeled golden set and gates on
 the result. Pure HTTP: no Qdrant client, no credentials, no embedding model, so
 it runs anywhere `requests` does.
 
-An earlier version also queried the `site` collection directly for a
-no-ladder baseline. That answered its question once — the four-tier ladder is
-worth about +15pp over an unfiltered vector search, concentrated on
-natural-language queries — and as a nightly signal it was not worth the
-credentials, the qdrant-client dependency, or the two client-path bugs it cost.
-Recover it ad hoc if a regression ever needs attributing.
+Relevance only: no latency, no index internals. Querying the `site` collection
+directly measured the four-tier ladder at about +15pp over unfiltered vector
+search, but that is a one-off finding, not a nightly signal.
 
 Run: python -m site_search.eval
 """
@@ -18,7 +15,6 @@ import argparse
 import json
 import os
 import sys
-import time
 
 import requests
 import yaml
@@ -43,18 +39,20 @@ def load_cases(path: str | None = None) -> list[dict]:
         return yaml.safe_load(f)
 
 
-def query_endpoint(case: dict, timeout: float = 10.0) -> tuple[list[str], float]:
-    """Query the live endpoint. Returns (result urls in rank order, seconds)."""
+def query_endpoint(case: dict, timeout: float = 10.0) -> list[str]:
+    """Query the live endpoint. Returns result urls in rank order.
+
+    `timeout` is a safety net against a hung request, not a latency
+    measurement: this pipeline reports relevance, not performance.
+    """
     params = {
         "q": case["q"],
         "section": case["section"],
         "partition": case["partition"],
     }
-    started = time.perf_counter()
     response = requests.get(SEARCH_API, params=params, timeout=timeout)
-    elapsed = time.perf_counter() - started
     response.raise_for_status()
-    return result_urls(response.json()), elapsed
+    return result_urls(response.json())
 
 
 def _score(urls: list[str], case: dict) -> dict:
@@ -67,11 +65,10 @@ def _score(urls: list[str], case: dict) -> dict:
 
 def run(cases: list[dict]) -> dict:
     """Execute every case against the live endpoint and return the full report."""
-    rows, per_case, latencies, zero_result_ids = [], [], [], []
+    rows, per_case, zero_result_ids = [], [], []
 
     for case in cases:
-        urls, elapsed = query_endpoint(case)
-        latencies.append(elapsed)
+        urls = query_endpoint(case)
         if not urls:
             zero_result_ids.append(case["id"])
 
@@ -86,7 +83,6 @@ def run(cases: list[dict]) -> dict:
                 "endpoint_hit": score["hit"],
                 "endpoint_rr": round(score["rr"], 4),
                 "endpoint_urls": urls,
-                "latency_ms": round(elapsed * 1000),
             }
         )
 
@@ -94,7 +90,6 @@ def run(cases: list[dict]) -> dict:
     return {
         "endpoint": endpoint._asdict(),
         "endpoint_by_kind": {k: m._asdict() for k, m in aggregate_by_kind(rows).items()},
-        "max_latency_ms": round(max(latencies) * 1000) if latencies else 0,
         "zero_result_ids": zero_result_ids,
         "floor": HIT_RATE_FLOOR,
         "failures": gate_failures(endpoint, zero_result_ids, HIT_RATE_FLOOR),

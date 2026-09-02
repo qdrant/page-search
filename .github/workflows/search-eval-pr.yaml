@@ -18,10 +18,6 @@ permissions:
 
 jobs:
   eval:
-    # Fork PRs get a read-only GITHUB_TOKEN, so pull-requests: write is not
-    # granted and the comment cannot be posted. The eval itself would run fine
-    # (it needs no secrets), but skip rather than fail on the comment step.
-    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
 
     steps:

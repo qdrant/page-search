@@ -168,11 +168,7 @@ def render_markdown(report: dict) -> str:
         e = report["endpoint_by_kind"][kind]
         lines.append(f"| {kind} | {e['n']} | {e['hit_rate']:.3f} | {e['mrr']:.3f} |")
 
-    lines += [
-        "",
-        f"max latency: {report['max_latency_ms']} ms",
-        "",
-    ]
+    lines.append("")
 
     misses = [c for c in report["cases"] if not c["endpoint_hit"]]
     if misses:
@@ -195,7 +191,8 @@ def render_markdown(report: dict) -> str:
             )
         lines.append("")
 
-    if report["failures"]:
-        lines += ["### Failures", ""] + [f"- {f}" for f in report["failures"]] + [""]
-
+    # No separate failure list: every gate reason is already visible above. A
+    # hit-rate below the floor is the PASS/FAIL line, and a zero-result case is
+    # a "_no results_" row in the misses table. The reasons still travel in the
+    # JSON report and print to stderr, which is what drives the exit code.
     return "\n".join(lines)

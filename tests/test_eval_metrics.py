@@ -158,7 +158,6 @@ def _report(hit_rate=0.9, failures=()):
     return {
         "endpoint": {"n": 40, "hit_rate": hit_rate, "mrr": 0.5},
         "endpoint_by_kind": {"keyword": {"n": 12, "hit_rate": 0.9, "mrr": 0.5}},
-        "max_latency_ms": 940,
         "zero_result_ids": [],
         "floor": 0.70,
         "failures": list(failures),
@@ -211,7 +210,6 @@ def _miss_report():
             "endpoint_hit": False,
             "endpoint_rr": 0.0,
             "endpoint_urls": ["/documentation/a/", "/documentation/b/"],
-            "latency_ms": 500,
         },
         {
             "id": "zero-case",
@@ -221,7 +219,6 @@ def _miss_report():
             "endpoint_hit": False,
             "endpoint_rr": 0.0,
             "endpoint_urls": [],
-            "latency_ms": 500,
         },
     ]
     return r
