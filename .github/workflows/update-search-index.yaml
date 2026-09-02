@@ -60,3 +60,37 @@ jobs:
     - name: crawl and index snippets
       run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} qdrant/page-search python -m site_search.snippets
+
+  eval-search:
+    # Runs after the index is rebuilt, so a half-finished reindex fails the
+    # eval the same night rather than a day later.
+    needs: index-site
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.11'
+
+    # Deliberately not `docker run qdrant/page-search` like the sibling jobs:
+    # that image is published by hand (no workflow builds or pushes it), so an
+    # eval job using it would fail with `No module named site_search.eval`
+    # until someone manually republished. Three packages is also far cheaper
+    # than a full poetry install, which drags in scipy, fastembed and openai
+    # for code that needs none of them.
+    - name: install deps
+      run: pip install qdrant-client==1.17.1 requests pyyaml
+
+    - name: run search evals
+      run: python -m site_search.eval --summary "$GITHUB_STEP_SUMMARY" --json eval-results.json
+      env:
+        QDRANT_HOST: ${{ secrets.QDRANT_HOST }}
+        QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always()
+      with:
+        name: eval-results
+        path: eval-results.json
