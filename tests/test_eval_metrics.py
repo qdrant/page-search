@@ -196,3 +196,67 @@ def test_render_without_dense_says_not_measured():
 def test_render_without_dense_has_no_crash_and_keeps_kind_table():
     out = render_markdown(_report(dense=False))
     assert "| keyword |" in out
+
+
+from site_search.eval_metrics import doc_link
+
+
+def test_doc_link_makes_relative_path_clickable():
+    assert doc_link("/documentation/search/filtering/") == (
+        "[/documentation/search/filtering/]"
+        "(https://qdrant.tech/documentation/search/filtering/)"
+    )
+
+
+def test_doc_link_leaves_absolute_url_alone():
+    url = "https://qdrant.tech/articles/hybrid-search/"
+    assert doc_link(url) == f"[{url}]({url})"
+
+
+def _miss_report():
+    r = _report(hit_rate=0.5, failures=["endpoint hit-rate@5 0.500 is below floor 0.700"])
+    r["cases"] = [
+        {
+            "id": "payload-filtering",
+            "q": "payload filtering",
+            "kind": "keyword",
+            "primary": "/documentation/search/filtering/",
+            "endpoint_hit": False,
+            "endpoint_rr": 0.0,
+            "dense_hit": False,
+            "endpoint_urls": ["/documentation/a/", "/documentation/b/"],
+            "latency_ms": 500,
+        },
+        {
+            "id": "zero-case",
+            "q": "nothing",
+            "kind": "typo",
+            "primary": "/documentation/quickstart/",
+            "endpoint_hit": False,
+            "endpoint_rr": 0.0,
+            "dense_hit": False,
+            "endpoint_urls": [],
+            "latency_ms": 500,
+        },
+    ]
+    return r
+
+
+def test_misses_table_shows_what_was_returned():
+    out = render_markdown(_miss_report())
+    assert "| id | query | expected | returned |" in out
+    assert "1. [/documentation/a/](https://qdrant.tech/documentation/a/)" in out
+    assert "2. [/documentation/b/](https://qdrant.tech/documentation/b/)" in out
+
+
+def test_misses_table_links_the_expected_page():
+    out = render_markdown(_miss_report())
+    assert "[/documentation/search/filtering/](https://qdrant.tech/documentation/search/filtering/)" in out
+
+
+def test_misses_table_marks_zero_result_case():
+    assert "_no results_" in render_markdown(_miss_report())
+
+
+def test_hits_produce_no_misses_table():
+    assert "Endpoint misses" not in render_markdown(_report())

@@ -10,6 +10,9 @@ from urllib.parse import urlparse
 
 VALID_KINDS = ("keyword", "natural", "typo", "navigational")
 
+# Payload URLs are site-relative; this makes them clickable in reports.
+SITE_ROOT = "https://qdrant.tech"
+
 # Results are always compared at 5: the service returns at most 5 hits
 # (SEARCH_LIMIT in rust_search/src/main.rs:31).
 CUTOFF = 5
@@ -117,6 +120,17 @@ def gate_failures(endpoint: Metrics, zero_result_ids: list[str], floor: float) -
     return failures
 
 
+def doc_link(url: str) -> str:
+    """Markdown link to the live page.
+
+    Payload URLs come back site-relative ('/documentation/x/'), which is not
+    clickable in a PR comment. Keep the path as the visible text so rows stay
+    scannable, and point the href at the live site.
+    """
+    href = url if url.startswith("http") else f"{SITE_ROOT}{url}"
+    return f"[{url}]({href})"
+
+
 def _run_url() -> str | None:
     """Link back to the workflow run, when running inside GitHub Actions."""
     server = os.environ.get("GITHUB_SERVER_URL")
@@ -185,8 +199,23 @@ def render_markdown(report: dict) -> str:
 
     misses = [c for c in report["cases"] if not c["endpoint_hit"]]
     if misses:
-        lines += ["### Endpoint misses", "", "| id | query | expected |", "| --- | --- | --- |"]
-        lines += [f"| {c['id']} | `{c['q']}` | {c['primary']} |" for c in misses]
+        lines += [
+            "### Endpoint misses",
+            "",
+            "| id | query | expected | returned |",
+            "| --- | --- | --- | --- |",
+        ]
+        for case in misses:
+            # Repeated paths are real: two chunks from the same page each count
+            # as a result, so the same link can legitimately appear twice.
+            returned = "<br>".join(
+                f"{rank}. {doc_link(url)}"
+                for rank, url in enumerate(case["endpoint_urls"], start=1)
+            )
+            lines.append(
+                f"| {case['id']} | `{case['q']}` | {doc_link(case['primary'])} | "
+                f"{returned or '_no results_'} |"
+            )
         lines.append("")
 
     if report["failures"]:
