@@ -137,6 +137,11 @@ def render_markdown(report: dict) -> str:
     lines = [
         "## Docs search eval",
         "",
+        "`endpoint` is the live service. `no ladder` is the **same query vector on "
+        "the same `site` collection**, filtered only by section and partition — no "
+        "`tag` filter, no full-text `text` condition, no four-tier priority. The gap "
+        "between the rows is what the ladder's filters buy, not a different engine.",
+        "",
         f"{'✅ PASS' if passed else '❌ FAIL'} — endpoint hit-rate@5 "
         f"**{endpoint['hit_rate']:.3f}** vs floor {report['floor']:.3f}",
         "",
@@ -147,9 +152,9 @@ def render_markdown(report: dict) -> str:
         lines += [f"[workflow run]({run_url})", ""]
 
     dense_row = (
-        f"| dense only | {dense['n']} | {dense['hit_rate']:.3f} | {dense['mrr']:.3f} |"
+        f"| no ladder | {dense['n']} | {dense['hit_rate']:.3f} | {dense['mrr']:.3f} |"
         if dense
-        else "| dense only | — | _not measured (no cluster credentials)_ | — |"
+        else "| no ladder | — | _not measured (no cluster credentials)_ | — |"
     )
     lines += [
         "| layer | n | hit-rate@5 | MRR@5 |",
@@ -157,7 +162,7 @@ def render_markdown(report: dict) -> str:
         f"| endpoint | {endpoint['n']} | {endpoint['hit_rate']:.3f} | {endpoint['mrr']:.3f} |",
         dense_row,
         "",
-        "| kind | n | endpoint hit-rate@5 | endpoint MRR@5 | dense hit-rate@5 |",
+        "| kind | n | endpoint hit-rate@5 | endpoint MRR@5 | no-ladder hit-rate@5 |",
         "| --- | --- | --- | --- | --- |",
     ]
     for kind in sorted(report["endpoint_by_kind"]):
