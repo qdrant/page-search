@@ -103,9 +103,10 @@ def result_urls(payload: dict) -> list[str]:
 def gate_failures(endpoint: Metrics, zero_result_ids: list[str], floor: float) -> list[str]:
     """Reasons the run should fail the build. Empty list means pass.
 
-    Only endpoint results gate. The dense baseline is diagnostic — it exists to
-    attribute a regression, not to cause one — so a dense anomaly reports in the
-    summary without failing CI.
+    Two conditions, both about the live endpoint: relevance below the floor, and
+    any case coming back empty. The second is the sharper signal for "index or
+    service is broken" as opposed to "relevance drifted", since a healthy
+    service essentially always returns five results.
     """
     failures = []
     if endpoint.hit_rate < floor:
@@ -143,18 +144,12 @@ def _run_url() -> str | None:
 
 def render_markdown(report: dict) -> str:
     endpoint = report["endpoint"]
-    dense = report.get("dense")
     passed = not report["failures"]
 
     # Comment stickiness is handled by the sticky-pull-request-comment action's
     # own hidden header, so no marker is needed in this body.
     lines = [
         "## Docs search eval",
-        "",
-        "`endpoint` is the live service. `no ladder` is the **same query vector on "
-        "the same `site` collection**, filtered only by section and partition — no "
-        "`tag` filter, no full-text `text` condition, no four-tier priority. The gap "
-        "between the rows is what the ladder's filters buy, not a different engine.",
         "",
         f"{'✅ PASS' if passed else '❌ FAIL'} — endpoint hit-rate@5 "
         f"**{endpoint['hit_rate']:.3f}** vs floor {report['floor']:.3f}",
@@ -165,35 +160,19 @@ def render_markdown(report: dict) -> str:
     if run_url:
         lines += [f"[workflow run]({run_url})", ""]
 
-    dense_row = (
-        f"| no ladder | {dense['n']} | {dense['hit_rate']:.3f} | {dense['mrr']:.3f} |"
-        if dense
-        else "| no ladder | — | _not measured (no cluster credentials)_ | — |"
-    )
     lines += [
-        "| layer | n | hit-rate@5 | MRR@5 |",
+        f"| kind | n | hit-rate@5 | MRR@5 |",
         "| --- | --- | --- | --- |",
-        f"| endpoint | {endpoint['n']} | {endpoint['hit_rate']:.3f} | {endpoint['mrr']:.3f} |",
-        dense_row,
-        "",
-        "| kind | n | endpoint hit-rate@5 | endpoint MRR@5 | no-ladder hit-rate@5 |",
-        "| --- | --- | --- | --- | --- |",
+        f"| **overall** | {endpoint['n']} | **{endpoint['hit_rate']:.3f}** "
+        f"| **{endpoint['mrr']:.3f}** |",
     ]
     for kind in sorted(report["endpoint_by_kind"]):
         e = report["endpoint_by_kind"][kind]
-        by_kind = report.get("dense_by_kind") or {}
-        d = by_kind.get(kind)
-        dense_cell = f"{d['hit_rate']:.3f}" if d else "—"
-        lines.append(
-            f"| {kind} | {e['n']} | {e['hit_rate']:.3f} | {e['mrr']:.3f} | {dense_cell} |"
-        )
+        lines.append(f"| {kind} | {e['n']} | {e['hit_rate']:.3f} | {e['mrr']:.3f} |")
 
-    corpus = report.get("corpus_size")
     lines += [
         "",
-        f"corpus: {f'{corpus} points' if corpus is not None else 'not measured'} · "
-        f"max latency: {report['max_latency_ms']} ms · "
-        f"floor: {report['floor']:.3f}",
+        f"max latency: {report['max_latency_ms']} ms · floor: {report['floor']:.3f}",
         "",
     ]
 

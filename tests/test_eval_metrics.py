@@ -153,15 +153,11 @@ def test_gate_floor_is_inclusive():
 from site_search.eval_metrics import render_markdown
 
 
-def _report(hit_rate=0.9, failures=(), dense=True):
+def _report(hit_rate=0.9, failures=()):
     """Minimal report dict shaped like site_search.eval.run() output."""
     return {
         "endpoint": {"n": 40, "hit_rate": hit_rate, "mrr": 0.5},
-        "dense": {"n": 40, "hit_rate": 0.6, "mrr": 0.4} if dense else None,
         "endpoint_by_kind": {"keyword": {"n": 12, "hit_rate": 0.9, "mrr": 0.5}},
-        "dense_by_kind": {"keyword": {"n": 12, "hit_rate": 0.6, "mrr": 0.4}} if dense else None,
-        "dense_measured": dense,
-        "corpus_size": 12345 if dense else None,
         "max_latency_ms": 940,
         "zero_result_ids": [],
         "floor": 0.70,
@@ -187,15 +183,6 @@ def test_render_shows_fail_when_gated():
     assert "0.600" in out
 
 
-def test_render_without_dense_says_not_measured():
-    out = render_markdown(_report(dense=False))
-    assert "not measured" in out
-    assert "corpus: not measured" in out
-
-
-def test_render_without_dense_has_no_crash_and_keeps_kind_table():
-    out = render_markdown(_report(dense=False))
-    assert "| keyword |" in out
 
 
 from site_search.eval_metrics import doc_link
@@ -223,7 +210,6 @@ def _miss_report():
             "primary": "/documentation/search/filtering/",
             "endpoint_hit": False,
             "endpoint_rr": 0.0,
-            "dense_hit": False,
             "endpoint_urls": ["/documentation/a/", "/documentation/b/"],
             "latency_ms": 500,
         },
@@ -234,7 +220,6 @@ def _miss_report():
             "primary": "/documentation/quickstart/",
             "endpoint_hit": False,
             "endpoint_rr": 0.0,
-            "dense_hit": False,
             "endpoint_urls": [],
             "latency_ms": 500,
         },
@@ -260,3 +245,9 @@ def test_misses_table_marks_zero_result_case():
 
 def test_hits_produce_no_misses_table():
     assert "Endpoint misses" not in render_markdown(_report())
+
+
+def test_render_keeps_overall_and_per_kind_rows():
+    out = render_markdown(_report())
+    assert "| **overall** |" in out
+    assert "| keyword |" in out

@@ -18,9 +18,9 @@ permissions:
 
 jobs:
   eval:
-    # Fork PRs receive no secrets, so the dense baseline cannot run there. The
-    # eval degrades rather than crashing, but skip the job outright instead of
-    # posting a half-measured report on a PR whose author cannot fix it.
+    # Fork PRs get a read-only GITHUB_TOKEN, so pull-requests: write is not
+    # granted and the comment cannot be posted. The eval itself would run fine
+    # (it needs no secrets), but skip rather than fail on the comment step.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
 
@@ -32,7 +32,7 @@ jobs:
         python-version: '3.11'
 
     - name: install deps
-      run: pip install qdrant-client==1.17.1 requests pyyaml python-dotenv
+      run: pip install requests pyyaml
 
     # continue-on-error so a tripped gate still gets a comment explaining why.
     # The last step re-asserts the failure so the check still goes red.
@@ -40,9 +40,6 @@ jobs:
       id: eval
       continue-on-error: true
       run: python -m site_search.eval --summary comment.md --json eval-results.json
-      env:
-        QDRANT_HOST: ${{ secrets.QDRANT_HOST }}
-        QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
 
     - name: add report to the run summary
       if: always()
