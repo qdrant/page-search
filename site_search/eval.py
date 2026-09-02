@@ -66,13 +66,20 @@ def query_endpoint(case: dict, timeout: float = 10.0) -> tuple[list[str], float]
     return result_urls(response.json()), elapsed
 
 
-
 def make_client() -> QdrantClient:
+    # cloud_inference=True is required, not cosmetic. Unlike the Rust client's
+    # Document::new — which always ships the text to the server — the Python
+    # client defaults cloud_inference to False and tries to embed locally with
+    # fastembed, dying on "sentence-transformers/all-MiniLM-L6-v2 is not found
+    # among supported models" when fastembed is not installed. True routes the
+    # query through the server's inference, the same path the live service uses
+    # (rust_search/src/main.rs:298), and keeps fastembed out of the CI install.
     return QdrantClient(
         host=QDRANT_HOST,
         port=QDRANT_PORT,
         api_key=QDRANT_API_KEY,
         prefer_grpc=True,
+        cloud_inference=True,
     )
 
 
