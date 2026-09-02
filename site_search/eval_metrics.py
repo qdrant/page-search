@@ -15,8 +15,17 @@ CUTOFF = 5
 
 # Seeded from the first measured baseline run, not chosen in advance:
 # observed endpoint hit-rate@5, minus 0.10 absolute, rounded down to the
-# nearest 0.05. Task 8 of the implementation plan sets this.
-HIT_RATE_FLOOR = 0.0
+# nearest 0.05.
+#
+# Baseline 2026-09-02, 40 cases against search.qdrant.tech:
+#   overall      hit-rate@5 0.800   MRR@5 0.467
+#   keyword      0.917 (12)
+#   typo         0.833 (6)
+#   natural      0.786 (14)
+#   navigational 0.625 (8)   <- weakest bucket
+#
+# 0.800 - 0.10 = 0.700, which is already a multiple of 0.05.
+HIT_RATE_FLOOR = 0.70
 
 
 class Metrics(NamedTuple):
