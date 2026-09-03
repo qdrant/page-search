@@ -21,8 +21,10 @@ uvicorn = "^0.18.3"
 fastapi-utils = "^0.2.1"
 markdown-it-py = "^4.0.0"
 openai = {extras = ["aiohttp"], version = "^2.30.0"}
+pyyaml = "^6.0"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
