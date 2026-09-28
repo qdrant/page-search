@@ -189,6 +189,10 @@ def _normalize_language(language: str) -> str:
     return _language_map.get(language, language)
 
 
+def _skip_for_context(node: SyntaxTreeNode) -> bool:
+    return node.type in ["fence", "code_block"] or _snippet_page_url(node) is not None
+
+
 def _format_context(
     node: SyntaxTreeNode, context: str, offset: int = 10
 ) -> SnippetContext:
@@ -200,7 +204,7 @@ def _format_context(
     # skip preceding and following code blocks for context
     # NOTE: should we only skip if language doesn't match?
     prev = node
-    while (prev := prev.previous_sibling) and prev.type in ["fence", "code_block"]:
+    while (prev := prev.previous_sibling) and _skip_for_context(prev):
         continue
 
     if prev is not None:
@@ -208,7 +212,7 @@ def _format_context(
         start = prev.map[1]
 
     next = node
-    while (next := next.next_sibling) and next.type in ["fence", "code_block"]:
+    while (next := next.next_sibling) and _skip_for_context(next):
         continue
 
     if next is not None:
@@ -221,6 +225,18 @@ def _format_context(
     )
 
 
+def _snippet_page_url(node: SyntaxTreeNode) -> str | None:
+    """URL of the standalone all-languages snippet page a shortcode blockquote
+    links to (landing_page #2763), or None if `node` isn't such a blockquote."""
+    if node.type != "blockquote":
+        return None
+    for descendant in node.walk():
+        href = descendant.attrs.get("href", "") if descendant.type == "link" else ""
+        if isinstance(href, str) and "/documentation/snippets/" in href:
+            return href
+    return None
+
+
 def _extract_from_markdown_tree(
     content: str, root: SyntaxTreeNode, source: str, source_hash: str
 ) -> list[Snippet]:
@@ -228,18 +244,38 @@ def _extract_from_markdown_tree(
 
     for node in root.children:
         # Code fence, optionally with language info
-        if node.type == "fence":
+        if node.type != "fence":
+            continue
+
+        sibling = node.next_sibling
+        link = _snippet_page_url(sibling) if sibling is not None else None
+        context = _format_context(node, content)
+
+        if link is None:
+            # Plain fence
+            languages = [(_normalize_language(node.info), node.content)]
+        else:
+            # Multi-language shortcode snippet
+            resp = retry(requests.get, 10)(link)
+            if resp.ok:
+                page = SyntaxTreeNode(MarkdownIt("commonmark").parse(resp.text))
+                languages = [
+                    (_normalize_language(n.info), n.content)
+                    for n in page.children
+                    if n.type == "fence"
+                ]
+            else:
+                logger.warning(f"Could not load snippet page {link} from {source}")
+                languages = [(_normalize_language(node.info), node.content)]
+
+        for language, code in languages:
             snippets.append(
                 Snippet(
-                    code=node.content,
-                    language=_normalize_language(node.info),
+                    code=code,
+                    language=language,
                     package_name="qdrant-client",
-                    source=SourceInfo(
-                        url=source,
-                        hash=source_hash,
-                        lines=node.map,
-                    ),
-                    context=_format_context(node, content),
+                    source=SourceInfo(url=source, hash=source_hash, lines=node.map),
+                    context=context,
                     version="latest",
                 )
             )
