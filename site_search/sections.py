@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
+from fastembed import TextEmbedding
 from loguru import logger
 from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
@@ -14,7 +15,6 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
     Distance,
-    Document,
     PointStruct,
     TextIndexParams,
     TextIndexType,
@@ -65,11 +65,11 @@ class Section(BaseModel):
         # Use the first 16 bytes of the hash to create a UUID
         return str(uuid.UUID(bytes=content_hash[:16]))
 
-    def as_point(self, model: str) -> PointStruct:
+    def as_point(self, vector: list[float]) -> PointStruct:
         return PointStruct(
             id=self.uuid,
             payload=self.metadata,
-            vector=Document(text=self.content, model=model),
+            vector=vector,
         )
 
 
@@ -191,12 +191,16 @@ def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
 
 
 def main():
+    # Download, load, and exercise the model before deleting the serving index.
+    # embed() is lazy, so consume a vector to catch inference failures too.
+    encoder = TextEmbedding(model_name=NEURAL_ENCODER)
+    vector_size = len(next(encoder.embed(["Documentation index preflight"])))
+
     qdrant_client = QdrantClient(
         host=QDRANT_HOST,
         port=int(QDRANT_PORT),
         api_key=QDRANT_API_KEY,
         prefer_grpc=True,
-        local_inference_batch_size=32,
     )
 
     if qdrant_client.collection_exists(SECTION_COLLECTION_NAME):
@@ -205,7 +209,7 @@ def main():
     qdrant_client.create_collection(
         collection_name=SECTION_COLLECTION_NAME,
         vectors_config=VectorParams(
-            size=qdrant_client.get_embedding_size(NEURAL_ENCODER),
+            size=vector_size,
             distance=Distance.COSINE,
         ),
     )
@@ -271,10 +275,14 @@ def main():
             if len(result.sections) == 0:
                 continue
 
+            vectors = encoder.embed(
+                [section.content for section in result.sections], batch_size=32
+            )
             qdrant_client.upsert(
                 SECTION_COLLECTION_NAME,
                 points=[
-                    section.as_point(NEURAL_ENCODER) for section in result.sections
+                    section.as_point(vector.tolist())
+                    for section, vector in zip(result.sections, vectors, strict=True)
                 ],
             )
 
