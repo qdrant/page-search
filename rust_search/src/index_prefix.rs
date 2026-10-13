@@ -1,6 +1,3 @@
-mod common;
-
-use crate::common::{get_qdrant_url, PREFIX_COLLECTION_NAME};
 use anyhow::Result;
 use itertools::Itertools;
 use qdrant_client::qdrant::{
@@ -9,6 +6,7 @@ use qdrant_client::qdrant::{
 };
 use qdrant_client::qdrant::{CreateCollection, Distance, Document, UpsertPointsBuilder, Value};
 use qdrant_client::Qdrant;
+use rust_search::common::{get_qdrant_url, PREFIX_COLLECTION_NAME};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use tokio::main;
