@@ -4,13 +4,14 @@ use std::collections::BTreeSet;
 
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::{
-    value::Kind, Condition, Document, Filter, PayloadIncludeSelector, PointId, QueryPointsBuilder,
-    ScoredPoint, ScrollPointsBuilder, VectorInput,
+    value::Kind, Condition, Filter, PayloadIncludeSelector, PointId, QueryPointsBuilder,
+    ScoredPoint, ScrollPointsBuilder,
 };
 use qdrant_client::Qdrant;
 use serde::Deserialize;
 
 use super::models::{Section, SectionSearchResult, slugify_heading};
+use crate::embedding::QueryEncoder;
 
 const SECTION_COLLECTION_NAME: &str = "sections";
 
@@ -82,17 +83,16 @@ async fn query_by_filter(
     Ok(result.result)
 }
 
-const NEURAL_ENCODER: &str = "sentence-transformers/all-MiniLM-L6-v2";
-
 async fn query_by_document(
     client: &Qdrant,
+    encoder: &QueryEncoder,
     query: &str,
     conditions: Vec<Condition>,
 ) -> anyhow::Result<Vec<ScoredPoint>> {
     let result = client
         .query(
             QueryPointsBuilder::new(SECTION_COLLECTION_NAME)
-                .query(VectorInput::from(Document::new(query, NEURAL_ENCODER)))
+                .query(encoder.encode(query).await?)
                 .filter(Filter::must(conditions))
                 .limit(sections_search_limit())
                 .with_payload(true),
@@ -103,6 +103,7 @@ async fn query_by_document(
 
 async fn search_by_query(
     client: &Qdrant,
+    encoder: &QueryEncoder,
     query: &str,
     conditions: Vec<Condition>,
     exact_limit: u64,
@@ -124,7 +125,7 @@ async fn search_by_query(
     }
 
     // Fallback to server-side vector search
-    let points = query_by_document(client, query, conditions).await?;
+    let points = query_by_document(client, encoder, query, conditions).await?;
     Ok(SectionSearchResult {
         sections: parse_sections(points),
         sublinks: None,
@@ -206,8 +207,11 @@ async fn browse_sections(
     Ok(Some(SectionSearchResult { sections, sublinks }))
 }
 
-async fn search_sections(
+/// Sections of the page at `path`: those matching `query` if given, otherwise
+/// all of them (or those under `section`) plus the page's sub-pages.
+pub async fn search_sections(
     client: &Qdrant,
+    encoder: &QueryEncoder,
     query: Option<&str>,
     path: &str,
     section: Option<&str>,
@@ -219,7 +223,7 @@ async fn search_sections(
 
     match query {
         Some(q) => Ok(Some(
-            search_by_query(client, q, conditions, exact_limit).await?,
+            search_by_query(client, encoder, q, conditions, exact_limit).await?,
         )),
         None => browse_sections(client, clean_path, section, conditions, exact_limit).await,
     }
@@ -238,12 +242,14 @@ pub async fn md_handler(
     req: HttpRequest,
     query: Query<MdSearch>,
     qdrant: Data<Qdrant>,
+    encoder: Data<QueryEncoder>,
 ) -> HttpResponse {
     let path_str = path.into_inner();
     let qdrant = qdrant.get_ref();
 
     let result = search_sections(
         qdrant,
+        &encoder,
         query.q.as_deref(),
         &path_str,
         query.s.as_deref(),

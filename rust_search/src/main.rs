@@ -1,419 +1,17 @@
-mod common;
-mod sections;
-mod skills;
-mod snippets;
+use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
-use std::{borrow::Cow, net::SocketAddr};
-
-use crate::common::{get_qdrant_url, COLLECTION_NAME, PREFIX_COLLECTION_NAME};
 use actix_cors::Cors;
-use actix_web::{
-    get,
-    http::header::ContentType,
-    main, middleware,
-    web::{Data, Query},
-    App, HttpResponse, HttpServer,
-};
-use futures::StreamExt;
-use qdrant_client::qdrant::point_id::PointIdOptions;
-use qdrant_client::qdrant::r#match::MatchValue;
-use qdrant_client::qdrant::value::Kind;
-use qdrant_client::qdrant::{
-    BatchResult, Condition, Document, Filter, LookupLocationBuilder, PointId,
-    QueryBatchPointsBuilder, QueryPoints, QueryPointsBuilder, RecommendInput, ScoredPoint, Value,
-    VectorInput,
-};
+use actix_web::{main, middleware, web::Data, App, HttpServer};
 use qdrant_client::Qdrant;
-use serde::{Deserialize, Serialize};
+use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
+use rust_search::common::get_qdrant_url;
+use rust_search::docs_mcp::{config::Config, DocsServer, SearchBackend};
+use rust_search::embedding::QueryEncoder;
+use rust_search::{search, sections, skills, snippets};
 
-const SEARCH_LIMIT: u64 = 5;
-const TEXT_LIMIT: usize = 80;
-const NEURAL_ENCODER: &str = "sentence-transformers/all-MiniLM-L6-v2";
-
-/// Postprocess search response
-///
-/// - Highlight matching query in text using `<b>` tag on word boundaries
-/// - Limit text length to `TEXT_LIMIT` characters
-fn post_process_response_text(text: &str, query: &str) -> String {
-    let text = if text.chars().count() > TEXT_LIMIT {
-        format!("{}...", &text.chars().take(TEXT_LIMIT).collect::<String>())
-    } else {
-        text.to_string()
-    };
-
-    let escaped_query = regex::escape(query);
-    let pattern = format!(r"(^|\W)({})(.*)", escaped_query);
-
-    let mut regex_builder = regex::RegexBuilder::new(&pattern);
-    regex_builder.case_insensitive(true).unicode(true);
-
-    let re = regex_builder.build().expect("Failed to compile regex");
-
-    let before = "<b>";
-    let after = "</b>";
-
-    let highlighted_text = re.replace_all(&text, |caps: &regex::Captures| {
-        format!("{}{}{}{}{}", &caps[1], before, &caps[2], after, &caps[3])
-    });
-
-    highlighted_text.to_string()
-}
-
-fn prefix_to_id(prefix: &str) -> PointId {
-    let len = prefix.len();
-    PointId::from(u64::from_le_bytes(if len < 8 {
-        let mut result = [0_u8; 8];
-        result[..len].copy_from_slice(prefix.as_bytes());
-        result
-    } else {
-        prefix.as_bytes()[..8].try_into().unwrap()
-    }))
-}
-
-#[derive(Deserialize)]
-struct Search {
-    q: String,
-    #[serde(default)]
-    section: String,
-    #[serde(default)]
-    partition: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ResponseItem {
-    pub payload: HashMap<String, Value>,
-    pub highlight: String,
-}
-
-#[derive(Serialize)]
-struct Response {
-    pub result: Vec<ResponseItem>,
-    pub time: f64,
-}
-
-// There are 4 levels of filtering priority:
-// 1. Search with text match in header
-// 2. Search with text match in body
-// 3. Search with no text match in header
-// 4. Search with no text match
-
-// We perform all 4 searches in parallel and then merge results
-
-fn get_list_of_title_tags() -> Vec<String> {
-    vec![
-        "h1".to_string(),
-        "h2".to_string(),
-        "h3".to_string(),
-        "h4".to_string(),
-        "h5".to_string(),
-        "h6".to_string(),
-    ]
-}
-
-fn get_list_of_body_tags() -> Vec<String> {
-    vec!["p".to_string(), "li".to_string()]
-}
-
-fn get_title_text_filter(query: &str) -> Vec<Condition> {
-    vec![
-        Condition::matches("tag", get_list_of_title_tags()),
-        Condition::matches("text", MatchValue::Text(query.to_string())),
-    ]
-}
-
-fn get_body_text_filter(query: &str) -> Vec<Condition> {
-    vec![
-        Condition::matches("tag", get_list_of_body_tags()),
-        Condition::matches("text", MatchValue::Text(query.to_string())),
-    ]
-}
-
-fn get_title_filter() -> Vec<Condition> {
-    vec![Condition::matches("tag", get_list_of_title_tags())]
-}
-
-fn get_recommend_query(
-    query: &str,
-    conditions: impl IntoIterator<Item = Condition>,
-) -> QueryPoints {
-    QueryPointsBuilder::new(COLLECTION_NAME)
-        .query(RecommendInput {
-            positive: vec![prefix_to_id(query).into()],
-            ..Default::default()
-        })
-        .filter(Filter::must(conditions))
-        .limit(SEARCH_LIMIT)
-        .with_payload(true)
-        .lookup_from(LookupLocationBuilder::new(PREFIX_COLLECTION_NAME).build())
-        .build()
-}
-
-fn get_search_query(
-    vector: VectorInput,
-    conditions: impl IntoIterator<Item = Condition>,
-) -> QueryPoints {
-    QueryPointsBuilder::new(COLLECTION_NAME)
-        .query(vector)
-        .filter(Filter::must(conditions))
-        .limit(SEARCH_LIMIT)
-        .with_payload(true)
-        .build()
-}
-
-fn point_id_to_hash(id: PointId) -> String {
-    match id.point_id_options {
-        None => "".to_string(),
-        Some(PointIdOptions::Num(num)) => format!("{}", num),
-        Some(PointIdOptions::Uuid(uuid)) => uuid,
-    }
-}
-
-fn merge_results(results: Vec<BatchResult>) -> Vec<ScoredPoint> {
-    let mut seen = HashSet::new();
-    let mut res = vec![];
-    for batch_result in results {
-        for point in batch_result.result {
-            let hashable_id = point.id.clone().map(point_id_to_hash).unwrap_or_default();
-
-            if seen.contains(&hashable_id) {
-                continue;
-            }
-            seen.insert(hashable_id);
-            res.push(point);
-        }
-        if res.len() >= SEARCH_LIMIT as usize {
-            break;
-        }
-    }
-    res.into_iter().take(SEARCH_LIMIT as usize).collect()
-}
-
-async fn recommend_request(
-    client: &Qdrant,
-    section_condition: Option<Condition>,
-    partition_condition: Option<Condition>,
-    query: &str,
-) -> Result<Vec<ScoredPoint>, HttpResponse> {
-    let mut title_text_filter = get_title_text_filter(query);
-    let mut body_text_filter = get_body_text_filter(query);
-    let mut title_filter = get_title_filter();
-    let mut no_text_filter = vec![];
-
-    if let Some(section_condition) = section_condition {
-        title_text_filter.push(section_condition.clone());
-        body_text_filter.push(section_condition.clone());
-        title_filter.push(section_condition.clone());
-        no_text_filter.push(section_condition);
-    }
-
-    if let Some(partition_condition) = partition_condition {
-        title_text_filter.push(partition_condition.clone());
-        body_text_filter.push(partition_condition.clone());
-        title_filter.push(partition_condition.clone());
-        no_text_filter.push(partition_condition);
-    }
-
-    match client
-        .query_batch(QueryBatchPointsBuilder::new(
-            COLLECTION_NAME,
-            vec![
-                get_recommend_query(query, title_text_filter),
-                get_recommend_query(query, body_text_filter),
-                get_recommend_query(query, title_filter),
-                get_recommend_query(query, no_text_filter),
-            ],
-        ))
-        .await
-    {
-        Ok(response) => {
-            log::debug!("Recommend Qdrant time: {:?}", response.time);
-            Ok(merge_results(response.result))
-        }
-        Err(_) => {
-            // TODO: distinguish between 404 and other errors
-            Ok(vec![])
-        }
-    }
-}
-
-async fn search_request(
-    client: &Qdrant,
-    section_condition: Option<Condition>,
-    partition_condition: Option<Condition>,
-    query: &str,
-    vector: VectorInput,
-) -> Result<Vec<ScoredPoint>, HttpResponse> {
-    let mut title_text_filter = get_title_text_filter(query);
-    let mut body_text_filter = get_body_text_filter(query);
-    let mut title_filter = get_title_filter();
-    let mut no_text_filter = vec![];
-
-    if let Some(section_condition) = section_condition {
-        title_text_filter.push(section_condition.clone());
-        body_text_filter.push(section_condition.clone());
-        title_filter.push(section_condition.clone());
-        no_text_filter.push(section_condition);
-    }
-
-    if let Some(partition_condition) = partition_condition {
-        title_text_filter.push(partition_condition.clone());
-        body_text_filter.push(partition_condition.clone());
-        title_filter.push(partition_condition.clone());
-        no_text_filter.push(partition_condition);
-    }
-
-    match client
-        .query_batch(QueryBatchPointsBuilder::new(
-            COLLECTION_NAME,
-            vec![
-                get_search_query(vector.clone(), title_text_filter),
-                get_search_query(vector.clone(), body_text_filter),
-                get_search_query(vector.clone(), title_filter),
-                get_search_query(vector.clone(), no_text_filter),
-            ],
-        ))
-        .await
-    {
-        Ok(response) => {
-            log::debug!("Search Qdrant time: {:?}", response.time);
-            Ok(merge_results(response.result))
-        }
-        Err(e) => Err(HttpResponse::InternalServerError().body(e.to_string())),
-    }
-}
-
-async fn search_or_recommend(
-    client: &Qdrant,
-    section_condition: Option<Condition>,
-    partition_condition: Option<Condition>,
-    query: &str,
-    do_recommend: bool,
-) -> Result<Vec<ScoredPoint>, HttpResponse> {
-    if do_recommend {
-        recommend_request(client, section_condition, partition_condition, query).await
-    } else {
-        let vector = VectorInput::from(Document::new(query, NEURAL_ENCODER));
-        search_request(
-            client,
-            section_condition,
-            partition_condition,
-            query,
-            vector,
-        )
-        .await
-    }
-}
-
-#[get("/api/search")]
-async fn query_handler(context: Data<Qdrant>, search: Query<Search>) -> HttpResponse {
-    let time_start = Instant::now();
-
-    let Search {
-        q,
-        section,
-        partition,
-    } = search.into_inner();
-
-    log::info!("Query: {}", q);
-
-    let qdrant = context.get_ref();
-
-    let section_condition = if section.is_empty() {
-        None
-    } else {
-        let sections: Vec<String> = section
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if sections.len() == 1 {
-            Some(Condition::matches(
-                "sections",
-                sections.into_iter().next().unwrap(),
-            ))
-        } else {
-            Some(Condition::matches("sections", sections))
-        }
-    };
-
-    let partition_condition = partition.map(|partition| {
-        let partitions: Vec<String> = partition
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if partitions.len() == 1 {
-            Condition::matches("partition", partitions.into_iter().next().unwrap())
-        } else {
-            Condition::matches("partition", partitions)
-        }
-    });
-
-    let mut query_stream = vec![];
-
-    if q.len() < 5 {
-        query_stream.push(search_or_recommend(
-            qdrant,
-            section_condition.clone(),
-            partition_condition.clone(),
-            &q,
-            true,
-        ));
-    }
-
-    query_stream.push(search_or_recommend(
-        qdrant,
-        section_condition.clone(),
-        partition_condition.clone(),
-        &q,
-        false,
-    ));
-
-    let mut search_stream = futures::stream::iter(query_stream).buffer_unordered(2);
-
-    let mut points = vec![];
-    while let Some(result) = search_stream.next().await {
-        log::debug!("response in {:?}", time_start.elapsed());
-        match result {
-            Ok(response) => {
-                if !response.is_empty() {
-                    points.extend(response);
-                    break;
-                }
-            }
-            Err(err) => return err,
-        }
-    }
-
-    // Postprocess search results
-    let response_items: Vec<_> = points
-        .into_iter()
-        .map(|point| {
-            let highlight = if let Some(Kind::StringValue(text)) =
-                &point.payload.get("text").and_then(|v| v.kind.as_ref())
-            {
-                post_process_response_text(text, &q)
-            } else {
-                "".to_string()
-            };
-
-            ResponseItem {
-                payload: point.payload,
-                highlight,
-            }
-        })
-        .collect();
-
-    HttpResponse::Ok().insert_header(ContentType::json()).body(
-        serde_json::to_string(&Response {
-            result: response_items,
-            time: time_start.elapsed().as_micros() as f64 / 1_000_000.0,
-        })
-        .expect("Failed to serialize response"),
-    )
-}
+/// Hosts the docs MCP server answers by default: this service's public name,
+/// and loopback for local testing.
+const DEFAULT_MCP_ALLOWED_HOSTS: &str = "search.qdrant.tech,localhost,127.0.0.1";
 
 #[main]
 async fn main() -> std::io::Result<()> {
@@ -431,15 +29,54 @@ async fn main() -> std::io::Result<()> {
     }
     let qdrant = builder.build().unwrap();
     qdrant.health_check().await.unwrap();
-    let qdrant = Data::new(qdrant);
+    let qdrant = Arc::new(qdrant);
+    let encoder = QueryEncoder::from_env().expect("invalid QUERY_EMBEDDING");
+
+    // The docs MCP server at /mcp shares the Qdrant client and query encoder.
+    let docs_config = Config::from_env().expect("invalid DOCS_MCP_* setting");
+    let mcp_allowed_hosts: Vec<String> = std::env::var("MCP_ALLOWED_HOSTS")
+        .unwrap_or(DEFAULT_MCP_ALLOWED_HOSTS.into())
+        .split(',')
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect();
+    // An empty list would turn the Host check off rather than fall back to
+    // the default, leaving /mcp open to DNS rebinding.
+    assert!(!mcp_allowed_hosts.is_empty(), "MCP_ALLOWED_HOSTS is empty");
+    log::info!(
+        "Docs MCP serving {:?} at /mcp for hosts {mcp_allowed_hosts:?}",
+        docs_config.sources
+    );
+    let docs_mcp = DocsServer::new(
+        docs_config,
+        SearchBackend::Qdrant {
+            client: qdrant.clone(),
+            encoder: encoder.clone(),
+        },
+    );
+
+    let qdrant = Data::from(qdrant);
+    let encoder = Data::new(encoder);
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
             .allow_any_header();
 
+        let docs_mcp = docs_mcp.clone();
+        // Stateless with JSON responses: every request stands alone, so it
+        // works through proxies and across replicas.
+        let mcp = StreamableHttpService::builder()
+            .service_factory(Arc::new(move || Ok(docs_mcp.clone())))
+            .session_manager(Arc::new(LocalSessionManager::default()))
+            .stateful_mode(false)
+            .json_response(true)
+            .allowed_hosts(mcp_allowed_hosts.clone())
+            .build();
+
         App::new()
             .app_data(qdrant.clone())
+            .app_data(encoder.clone())
             .wrap(cors)
             // Actix's default Logger format plus one appended field (client IP from the
             // reverse-proxy hop). Field order is load-bearing for a downstream parser: append
@@ -447,10 +84,11 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::new(
                 "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T \"%{X-Forwarded-For}i\"",
             ))
-            .service(query_handler)
+            .service(search::query_handler)
             .service(sections::md_handler)
             .service(skills::skills_handler)
             .service(snippets::search_handler)
+            .service(mcp.scope_with_path("/mcp"))
     });
     server.bind(addr)?.run().await
 }

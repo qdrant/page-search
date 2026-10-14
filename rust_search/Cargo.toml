@@ -35,3 +35,18 @@ regex = "1"
 itertools = "0.11"
 futures = "0.3.28"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+fastembed = { version = "7.1", optional = true }
+# The docs MCP server. rmcp-actix-web 0.13 supports rmcp 3.x only: upgrade both together.
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "schemars"] }
+rmcp-actix-web = "0.13"
+schemars = "1"
+url = "2"
+
+[dev-dependencies]
+rmcp = { version = "3.5", default-features = false, features = ["client", "server", "macros", "schemars"] }
+wiremock = "0.6"
+
+[features]
+# Embed queries in-process instead of with Qdrant Cloud inference, for testing
+# against a local Qdrant. Production builds leave it off.
+local-embeddings = ["dep:fastembed"]
