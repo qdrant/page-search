@@ -104,7 +104,7 @@ fn manifest() -> Value {
              "weight": 5, "aliases": [], "rendered": false},
             {"path": "/documentation/faq/basics/", "title": "Basics", "kind": "page", "weight": 1, "aliases": []},
             {"path": "/blog/", "title": "Blog", "description": "News.", "kind": "section", "weight": 0, "aliases": []},
-            {"path": "/blog/old-post/", "title": "Old Post", "kind": "page", "weight": 0, "date": "2023-01-01", "aliases": []},
+            {"path": "/blog/old-post/", "title": "Old Post", "kind": "page", "weight": 1000.0, "date": "2023-01-01", "aliases": []},
             {"path": "/blog/new-post/", "title": "New Post", "kind": "page", "weight": 0, "date": "2026-01-01", "aliases": null},
         ],
     })
@@ -359,6 +359,25 @@ async fn sources_are_a_plain_enum_argument() {
 }
 
 #[tokio::test]
+async fn optional_arguments_have_a_single_type() {
+    let h = Harness::new(true).await;
+    for tool in h.client.list_all_tools().await.unwrap() {
+        let schema = Value::Object((*tool.input_schema).clone());
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        for (name, property) in schema["properties"].as_object().unwrap() {
+            assert!(
+                !property["type"].is_array() && property.get("anyOf").is_none(),
+                "{}.{name}: {property}",
+                tool.name
+            );
+            if name != "query" && name != "page" {
+                assert!(!required.contains(&json!(name)), "{}.{name}", tool.name);
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn disabled_sources_are_refused() {
     let h = Harness::serving(&["documentation"], true, search_results()).await;
 
@@ -424,8 +443,48 @@ async fn get_page_resolves_alias_and_strips_preamble() {
     );
     assert!(body.starts_with(&expected), "{body}");
     assert!(body.contains("Last updated: 2026-09-01"));
+    assert!(body.contains("Partition: develop"), "{body}");
     assert!(!body.contains("skills.qdrant.tech"));
     assert!(body.contains("# Hybrid and Multi-Stage Queries"));
+}
+
+#[tokio::test]
+async fn instructions_group_sections_by_partition() {
+    let h = Harness::new(true).await;
+    let instructions = h.client.peer_info().unwrap().instructions.clone().unwrap();
+    assert!(instructions.contains("Typical flow"), "{instructions}");
+    // Descriptions stay in list_docs, to keep the instructions short.
+    let expected = "\
+develop (building apps and the API):
+- /documentation/search/: Search (3 pages)
+- /documentation/faq/: FAQ (2 pages)
+
+deploy (installation, Cloud, operations):
+- /documentation/cloud/: Qdrant Cloud (1 page)
+
+Other sources:
+- /blog/: Blog (3 pages)
+";
+    assert!(instructions.ends_with(expected), "{instructions}");
+}
+
+#[tokio::test]
+async fn instructions_without_documentation() {
+    let h = Harness::serving(&["blog"], true, search_results()).await;
+    let instructions = h.client.peer_info().unwrap().instructions.clone().unwrap();
+    assert!(!instructions.contains("develop"), "{instructions}");
+    assert!(instructions.ends_with("Other sources:\n- /blog/: Blog (3 pages)\n"));
+}
+
+#[tokio::test]
+async fn instructions_with_unpartitioned_sections() {
+    // llms.txt has no partitions.
+    let h = Harness::new(false).await;
+    let instructions = h.client.peer_info().unwrap().instructions.clone().unwrap();
+    assert!(
+        instructions.contains("Other documentation:\n- /documentation/search/: Search (1 page)"),
+        "{instructions}"
+    );
 }
 
 #[tokio::test]
@@ -442,7 +501,10 @@ async fn list_docs_sections_and_sidebar_order() {
     let sections = h.text("list_docs", json!({})).await;
     let pages = h.text("list_docs", json!({"section": "search"})).await;
     assert!(sections.find("/documentation/cloud/") < sections.find("/documentation/search/"));
-    assert!(sections.contains("Search (3 pages)"));
+    assert!(
+        sections.contains("- /documentation/search/: Search (3 pages) [develop]. Search Qdrant."),
+        "{sections}"
+    );
     assert_eq!(
         pages.lines().collect::<Vec<_>>(),
         [
@@ -461,7 +523,7 @@ async fn section_without_a_page() {
     let result = h.call("get_page", json!({"page": "faq"})).await;
     assert!(
         sections.find("/documentation/search/")
-            < sections.find("- /documentation/faq/: FAQ (2 pages)")
+            < sections.find("- /documentation/faq/: FAQ (2 pages) [develop]")
     );
     assert_eq!(
         pages.lines().next().unwrap(),

@@ -9,12 +9,15 @@ use qdrant_client::qdrant::{ScoredPoint, Value};
 use qdrant_client::Qdrant;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
-use rmcp::{schemars, tool, tool_handler, tool_router, Json, ServerHandler};
+use rmcp::model::{
+    Implementation, InitializeRequestParams, InitializeResult, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::RequestContext;
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, Json, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::site::{check_enabled, source_of, SiteClient};
+use super::site::{check_enabled, source_of, DocPage, SiteClient};
 use crate::embedding::QueryEncoder;
 use crate::search;
 
@@ -86,6 +89,17 @@ pub enum Partition {
 }
 
 impl Partition {
+    const ALL: [Partition; 4] = [Self::Develop, Self::Deploy, Self::Ecosystem, Self::Learn];
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Develop => "building apps and the API",
+            Self::Deploy => "installation, Cloud, operations",
+            Self::Ecosystem => "integrations and frameworks",
+            Self::Learn => "guides to search quality and production operations",
+        }
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Develop => "develop",
@@ -109,10 +123,14 @@ pub struct SearchArgs {
     /// What to look for, in natural language or keywords.
     pub query: String,
     /// Which sources to search: documentation, articles, blog, course. Leave it out to search all of them.
+    // Optional, not nullable: `type: [T, "null"]` is rejected by clients that
+    // map tool schemas onto a single-type dialect, such as Gemini's.
     #[serde(default)]
+    #[schemars(with = "Vec<Source>")]
     pub sources: Option<Vec<Source>>,
-    /// Optionally restrict documentation results to one part of the docs: develop (building apps and the API), deploy (installation, Cloud, operations), ecosystem (integrations and frameworks), learn (tutorials). Other sources ignore it.
+    /// Optionally restrict documentation results to one part of the docs: develop (building apps and the API), deploy (installation, Cloud, operations), ecosystem (integrations and frameworks), learn (guides to search quality and production operations). Other sources ignore it.
     #[serde(default)]
+    #[schemars(with = "Partition")]
     pub partition: Option<Partition>,
     /// Maximum number of pages to return.
     #[serde(default = "default_search_limit")]
@@ -134,6 +152,7 @@ fn default_list_limit() -> usize {
 pub struct ListDocsArgs {
     /// A section path such as search, /documentation/cloud/, or /blog/. Leave it out to list the top-level sections.
     #[serde(default)]
+    #[schemars(with = "String")]
     pub section: Option<String>,
     /// How many pages of the section to skip.
     #[serde(default)]
@@ -304,6 +323,9 @@ impl DocsServer {
         let mut header = vec![format!("Source: {url}")];
         if let Some(entry) = entry {
             header.insert(0, format!("Title: {}", entry.title));
+            if is_docs_with_partition(&entry) {
+                header.push(format!("Partition: {}", entry.partition));
+            }
             if let Some(date) = entry
                 .date
                 .as_ref()
@@ -337,14 +359,12 @@ impl DocsServer {
                 .site
                 .list_sections()
                 .await?
-                .into_iter()
+                .iter()
                 .map(|(page, count)| {
-                    let mut row = format!(
-                        "- {}: {} ({count} {})",
-                        page.path,
-                        page.title,
-                        if count == 1 { "page" } else { "pages" }
-                    );
+                    let mut row = section_row(page, *count);
+                    if is_docs_with_partition(page) {
+                        row.push_str(&format!(" [{}]", page.partition));
+                    }
                     if !page.description.is_empty() {
                         row.push_str(&format!(". {}", page.description));
                     }
@@ -414,6 +434,70 @@ fn source_list(sources: &[String]) -> String {
         .map(|s| format!("- {s}: {}", source_description(s)))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A top-level section as a list row, without its partition or description.
+fn section_row(page: &DocPage, count: usize) -> String {
+    format!(
+        "- {}: {} ({count} {})",
+        page.path,
+        page.title,
+        if count == 1 { "page" } else { "pages" }
+    )
+}
+
+fn is_docs_with_partition(page: &DocPage) -> bool {
+    page.source() == "documentation" && !page.partition.is_empty()
+}
+
+/// The top-level sections grouped by partition, so an agent can pass
+/// `section` and `partition` without browsing first.
+fn structure(sections: &[(DocPage, usize)]) -> String {
+    let rows = |keep: &dyn Fn(&DocPage) -> bool| -> String {
+        sections
+            .iter()
+            .filter(|(page, _)| keep(page))
+            .map(|(page, count)| section_row(page, *count))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut groups: Vec<String> = Partition::ALL
+        .iter()
+        .map(|p| {
+            let in_partition =
+                |page: &DocPage| page.source() == "documentation" && page.partition == p.as_str();
+            (
+                format!("{} ({})", p.as_str(), p.description()),
+                rows(&in_partition),
+            )
+        })
+        .chain([
+            (
+                "Other documentation".to_string(),
+                rows(&|page: &DocPage| {
+                    page.source() == "documentation"
+                        && !Partition::ALL.iter().any(|p| p.as_str() == page.partition)
+                }),
+            ),
+            (
+                "Other sources".to_string(),
+                rows(&|page: &DocPage| page.source() != "documentation"),
+            ),
+        ])
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(heading, rows)| format!("{heading}:\n{rows}"))
+        .collect();
+    if groups.is_empty() {
+        return String::new();
+    }
+    groups.insert(
+        0,
+        "Top-level sections, with the documentation grouped by partition. Pass a \
+         section path to list_docs to see its pages, or a partition to search_docs \
+         to search only that part of the documentation."
+            .to_string(),
+    );
+    groups.join("\n\n")
 }
 
 /// A search result before grouping, with the heading or passage that matched.
@@ -490,6 +574,26 @@ impl ServerHandler for DocsServer {
                     .with_title("Qdrant Documentation"),
             )
             .with_instructions(INSTRUCTIONS.replace("{sources}", &source_list(self.site.sources())))
+    }
+
+    /// Adds the site structure to the instructions. It comes from the page
+    /// index, which needs a fetch, so it can't be part of `get_info`.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let mut info = self.negotiate_initialize(&request)?;
+        let sections = self.site.list_sections().await.unwrap_or_else(|e| {
+            log::warn!("Instructions without the section list: {e}");
+            vec![]
+        });
+        let structure = structure(&sections);
+        if let Some(instructions) = info.instructions.as_mut().filter(|_| !structure.is_empty()) {
+            instructions.push_str(&format!("\n{structure}\n"));
+        }
+        Ok(info)
     }
 }
 
