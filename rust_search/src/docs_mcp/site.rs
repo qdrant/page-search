@@ -42,7 +42,7 @@ pub struct DocPage {
     pub kind: String,
     #[serde(default)]
     pub partition: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "any_number")]
     pub weight: i64,
     #[serde(default)]
     pub aliases: Option<Vec<String>>,
@@ -60,6 +60,11 @@ fn page_kind() -> String {
 
 fn yes() -> bool {
     true
+}
+
+/// Hugo writes some weights as floats, such as `1000.0`.
+fn any_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    Ok(f64::deserialize(deserializer)? as i64)
 }
 
 impl DocPage {
@@ -184,13 +189,15 @@ fn unlisted_section(manifest: &Manifest, path: &str) -> DocPage {
     }
     let mut page = DocPage::new(path.to_string(), title);
     page.kind = "section".to_string();
-    page.weight = manifest
+    if let Some(first) = manifest
         .pages
         .values()
         .filter(|p| p.path.starts_with(path))
-        .map(|p| p.weight)
-        .min()
-        .unwrap_or_default();
+        .min_by_key(|p| (p.weight, &p.path))
+    {
+        page.weight = first.weight;
+        page.partition = first.partition.clone();
+    }
     page
 }
 
