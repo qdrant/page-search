@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Search Admin</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --hover: rgba(11, 11, 11, 0.04);
+  --accent: #2a78d6;
+  --critical: #d03b3b;
+  --s-search: #2a78d6;
+  --s-md: #eb6834;
+  --s-skills: #1baf7a;
+  --s-snippets: #eda100;
+  --s-mcp: #e87ba4;
+  --s-other: #898781;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --hover: rgba(255, 255, 255, 0.05);
+    --accent: #3987e5;
+    --s-search: #3987e5;
+    --s-md: #d95926;
+    --s-skills: #199e70;
+    --s-snippets: #c98500;
+    --s-mcp: #d55181;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --hover: rgba(255, 255, 255, 0.05);
+  --accent: #3987e5;
+  --s-search: #3987e5;
+  --s-md: #d95926;
+  --s-skills: #199e70;
+  --s-snippets: #c98500;
+  --s-mcp: #d55181;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+header h1 { font-size: 16px; margin: 0; flex: 1; }
+header .who { color: var(--ink-2); }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+button, select, input {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+}
+button { cursor: pointer; }
+button:hover { background: var(--hover); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar .note { color: var(--muted); font-size: 12px; margin-left: auto; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px; min-width: 0;
+}
+.card h2 { font-size: 14px; margin: 0 0 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.card h2 .spacer { flex: 1; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+.tile .sub { color: var(--muted); font-size: 12px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .two { grid-template-columns: 1fr; } }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-bottom: 8px; }
+.legend span::before {
+  content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 6px; vertical-align: -1px; background: var(--c);
+}
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: 220px; }
+.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12); white-space: nowrap; display: none; z-index: 2;
+}
+.tip .row { display: flex; gap: 8px; align-items: center; }
+.tip .row b { margin-left: auto; font-variant-numeric: tabular-nums; padding-left: 12px; }
+.tip .sw { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--hover); }
+tbody tr.click:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.q { overflow-wrap: anywhere; min-width: 10ch; }
+.ep { white-space: nowrap; }
+.ep::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 6px; background: var(--c, var(--s-other));
+}
+.time { color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bad { color: var(--critical); }
+.empty { color: var(--muted); padding: 12px 0; }
+.more { margin-top: 8px; }
+dialog {
+  width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--ink);
+}
+dialog::backdrop { background: rgba(0,0,0,.35); }
+.dlg-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+.dlg-head h2 { font-size: 15px; margin: 0; flex: 1; }
+.dlg-body { padding: 16px; display: grid; gap: 16px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+dt { color: var(--ink-2); }
+dd { margin: 0; word-break: break-all; }
+pre {
+  margin: 0; padding: 12px; background: var(--page); border: 1px solid var(--border); border-radius: 8px;
+  overflow: auto; max-height: 55vh; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
+h3 { font-size: 13px; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+h3 .meta { color: var(--ink-2); font-weight: 400; }
+.err { color: var(--critical); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Site Search Admin</h1>
+  <span class="who" id="who"></span>
+  <form method="post" action="/admin/logout"><button type="submit">Sign Out</button></form>
+</header>
+<main>
+  <div class="toolbar">
+    <div class="seg" role="group" aria-label="Time Range" id="range">
+      <button data-days="1">24 hours</button>
+      <button data-days="7">7 days</button>
+      <button data-days="30">30 days</button>
+      <button data-days="90">90 days</button>
+    </div>
+    <span class="note">Days are in UTC. Requests are kept for 90 days.</span>
+  </div>
+
+  <div class="tiles">
+    <div class="card tile"><div class="label">Requests</div><div class="value" id="t-total">-</div><div class="sub" id="t-total-sub"></div></div>
+    <div class="card tile"><div class="label">MCP Tool Calls</div><div class="value" id="t-mcp">-</div><div class="sub" id="t-mcp-sub"></div></div>
+    <div class="card tile"><div class="label">Errors</div><div class="value" id="t-err">-</div><div class="sub" id="t-err-sub"></div></div>
+  </div>
+
+  <section class="card">
+    <h2>Requests per Day</h2>
+    <div class="legend" id="legend"></div>
+    <div class="chart" id="chart"><div class="tip" id="tip"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Endpoints <span class="meta" style="color:var(--muted);font-weight:400">Select one to list its requests.</span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Endpoint</th><th class="num">Requests</th><th class="num">Errors</th><th class="num">Avg</th><th class="num">p95</th></tr></thead>
+      <tbody id="endpoints"></tbody>
+    </table></div>
+  </section>
+
+  <div class="two">
+    <section class="card">
+      <h2>Top Queries <span class="spacer"></span>
+        <select id="top-endpoint" aria-label="Top Queries Endpoint"></select>
+      </h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Query</th><th>Endpoint</th><th class="num">Count</th></tr></thead>
+        <tbody id="top"></tbody>
+      </table></div>
+    </section>
+
+    <section class="card">
+      <h2>Requests <span class="spacer"></span>
+        <select id="req-endpoint" aria-label="Requests Endpoint"></select>
+        <input id="req-search" type="search" placeholder="Filter queries" aria-label="Filter Queries" size="14">
+      </h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Time</th><th>Endpoint</th><th>Query</th><th class="num">Status</th><th class="num">ms</th></tr></thead>
+        <tbody id="requests"></tbody>
+      </table></div>
+      <button class="more" id="more" hidden>Load More</button>
+    </section>
+  </div>
+</main>
+
+<dialog id="detail" aria-labelledby="detail-title">
+  <div class="dlg-head">
+    <h2 id="detail-title">Request</h2>
+    <button id="replay-again">Run Again</button>
+    <button id="detail-close" aria-label="Close">Close</button>
+  </div>
+  <div class="dlg-body">
+    <dl id="detail-info"></dl>
+    <div id="detail-body"></div>
+    <div>
+      <h3>Current Response <span class="meta" id="replay-meta"></span><span style="flex:1"></span>
+        <label id="raw-wrap" hidden><input type="checkbox" id="raw"> Raw</label></h3>
+      <pre id="replay-out">Loading...</pre>
+    </div>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+const GROUPS = ["search", "md", "skills", "snippets", "mcp"];
+const LABELS = { search: "/api/search", md: "/md", skills: "/skills", snippets: "/snippets/search", mcp: "MCP" };
+const groupOf = (ep) => ep.startsWith("mcp:") ? "mcp" : ep;
+const colorOf = (ep) => GROUPS.includes(groupOf(ep)) ? `var(--s-${groupOf(ep)})` : "var(--s-other)";
+const $ = (id) => document.getElementById(id);
+const fmt = new Intl.NumberFormat();
+const ms = (v) => v >= 100 ? fmt.format(Math.round(v)) : v.toFixed(1);
+
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "style") e.style.cssText = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v);
+  }
+  for (const c of children.flat()) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : String(c));
+  return e;
+}
+
+async function api(path) {
+  const res = await fetch(path, { credentials: "same-origin" });
+  if (res.status === 401) { location.href = "/admin/login"; throw new Error("signed out"); }
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+const state = { days: 30, reqBefore: null };
+try { const d = Number(localStorage.getItem("admin-days")); if ([1, 7, 30, 90].includes(d)) state.days = d; } catch {}
+
+function endpointCell(ep) {
+  return el("td", { class: "ep", style: `--c:${colorOf(ep)}` }, ep);
+}
+
+function fillEndpointSelect(select, endpoints) {
+  const current = select.value;
+  select.replaceChildren(el("option", { value: "" }, "All Endpoints"));
+  const groups = new Set(GROUPS);
+  for (const e of endpoints) groups.add(e.endpoint);
+  for (const g of groups) select.append(el("option", { value: g }, g === "mcp" ? "mcp (all)" : g));
+  select.value = [...select.options].some(o => o.value === current) ? current : "";
+}
+
+// ---- Stats ----
+let lastStats = null;
+async function loadStats() {
+  const stats = await api(`/admin/api/stats?days=${state.days}`);
+  const mcpCalls = stats.endpoints.filter(e => e.endpoint.startsWith("mcp:") && !["mcp:initialize", "mcp:tools/list", "mcp:GET", "mcp:DELETE"].includes(e.endpoint))
+    .reduce((s, e) => s + e.count, 0);
+  $("t-total").textContent = fmt.format(stats.total);
+  const perDay = stats.total / state.days;
+  $("t-total-sub").textContent = `${perDay >= 10 ? fmt.format(Math.round(perDay)) : perDay.toFixed(1)} per day`;
+  $("t-mcp").textContent = fmt.format(mcpCalls);
+  const sessions = stats.endpoints.find(e => e.endpoint === "mcp:initialize");
+  $("t-mcp-sub").textContent = `${fmt.format(sessions ? sessions.count : 0)} client connections`;
+  $("t-err").textContent = fmt.format(stats.errors);
+  $("t-err-sub").textContent = stats.total ? `${(100 * stats.errors / stats.total).toFixed(2)}% of requests` : "";
+
+  const tbody = $("endpoints");
+  tbody.replaceChildren();
+  if (!stats.endpoints.length) tbody.append(el("tr", {}, el("td", { colspan: 5, class: "empty" }, "No requests in this range.")));
+  for (const e of stats.endpoints) {
+    const pick = () => { $("req-endpoint").value = e.endpoint; resetRequests(); $("req-endpoint").scrollIntoView({ behavior: "smooth", block: "center" }); };
+    tbody.append(el("tr", { class: "click", tabindex: 0, onclick: pick, onkeydown: (ev) => ev.key === "Enter" && pick() },
+      endpointCell(e.endpoint),
+      el("td", { class: "num" }, fmt.format(e.count)),
+      el("td", { class: "num" + (e.errors ? " bad" : "") }, fmt.format(e.errors)),
+      el("td", { class: "num" }, `${ms(e.avg_ms)} ms`),
+      el("td", { class: "num" }, `${ms(e.p95_ms)} ms`)));
+  }
+  fillEndpointSelect($("top-endpoint"), stats.endpoints);
+  fillEndpointSelect($("req-endpoint"), stats.endpoints);
+  lastStats = stats;
+  drawChart(stats);
+}
+
+function utcDay(t) { return new Date(t).toISOString().slice(0, 10); }
+
+function drawChart(stats) {
+  const days = [];
+  const today = Date.now();
+  for (let t = today - (state.days - 1) * 86400000; t <= today + 1; t += 86400000) days.push(utcDay(t));
+  if (days[days.length - 1] !== utcDay(today)) days.push(utcDay(today));
+  const byDay = new Map(days.map(d => [d, {}]));
+  const present = new Set();
+  for (const r of stats.daily) {
+    const g = GROUPS.includes(r.group) ? r.group : "other";
+    if (!byDay.has(r.day)) continue;
+    byDay.get(r.day)[g] = (byDay.get(r.day)[g] || 0) + r.count;
+    present.add(g);
+  }
+  const series = [...GROUPS, "other"].filter(g => present.has(g));
+  $("legend").replaceChildren(...series.map(g => el("span", { style: `--c:var(--s-${g})` }, LABELS[g] || "other")));
+
+  const chart = $("chart");
+  chart.querySelector("svg")?.remove();
+  const W = Math.max(chart.clientWidth, 280), H = 220, padL = 44, padR = 8, padT = 8, padB = 22;
+  const totals = days.map(d => series.reduce((s, g) => s + (byDay.get(d)[g] || 0), 0));
+  const max = Math.max(1, ...totals);
+  const step = niceStep(max / 4);
+  const top = Math.ceil(max / step) * step;
+  const y = (v) => padT + (H - padT - padB) * (1 - v / top);
+  const slot = (W - padL - padR) / days.length;
+  const bw = Math.max(1, Math.min(28, slot - 2));
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Requests per day over the last ${state.days} days, by endpoint. The endpoints table lists the totals.`);
+  const add = (tag, attrs, text) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); if (text !== undefined) n.textContent = text; svg.append(n); return n; };
+
+  for (let v = 0; v <= top; v += step) {
+    add("line", { x1: padL, x2: W - padR, y1: y(v), y2: y(v), stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 });
+    add("text", { x: padL - 6, y: y(v) + 4, "text-anchor": "end" }, compact(v));
+  }
+  const labelEvery = Math.ceil(days.length / Math.max(2, Math.floor((W - padL) / 70)));
+  days.forEach((d, i) => {
+    const x = padL + i * slot + (slot - bw) / 2;
+    let acc = 0;
+    series.forEach((g, si) => {
+      const v = byDay.get(d)[g] || 0;
+      if (!v) return;
+      const y0 = y(acc), y1 = y(acc + v);
+      acc += v;
+      // A 2px surface gap between stacked segments; the top one gets rounded ends.
+      const isTop = !series.slice(si + 1).some(h => byDay.get(d)[h]);
+      const h = Math.max(0, y0 - y1 - (acc - v > 0 ? 2 : 0));
+      const r = isTop ? Math.min(4, bw / 2, h) : 0;
+      add("path", { d: roundedTop(x, y1, bw, h, r), fill: `var(--s-${g})` });
+    });
+    if ((days.length - 1 - i) % labelEvery === 0) add("text", { x: x + bw / 2, y: H - 6, "text-anchor": "middle" }, d.slice(5));
+    const hit = add("rect", { x: padL + i * slot, y: padT, width: slot, height: H - padT - padB, fill: "transparent" });
+    hit.addEventListener("mousemove", (ev) => showTip(ev, d, byDay.get(d), series, totals[i]));
+    hit.addEventListener("mouseleave", () => $("tip").style.display = "none");
+  });
+  chart.append(svg);
+}
+
+function roundedTop(x, y, w, h, r) {
+  if (h <= 0) return "";
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1))));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return Math.max(1, m * p);
+  return 10 * p;
+}
+function compact(v) { return v >= 1e6 ? `${+(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${+(v / 1e3).toFixed(1)}k` : String(v); }
+
+function showTip(ev, day, counts, series, total) {
+  const tip = $("tip");
+  tip.replaceChildren(el("div", { style: "font-weight:600;margin-bottom:4px" }, `${day} · ${fmt.format(total)}`),
+    ...series.slice().reverse().filter(g => counts[g]).map(g =>
+      el("div", { class: "row" }, el("span", { class: "sw", style: `--c:var(--s-${g})` }), LABELS[g] || "other", el("b", {}, fmt.format(counts[g])))));
+  tip.style.display = "block";
+  const box = $("chart").getBoundingClientRect();
+  let left = ev.clientX - box.left + 12;
+  if (left + tip.offsetWidth > box.width) left = ev.clientX - box.left - tip.offsetWidth - 12;
+  tip.style.left = `${Math.max(0, left)}px`;
+  tip.style.top = `${Math.max(0, ev.clientY - box.top - tip.offsetHeight / 2)}px`;
+}
+
+// ---- Top queries ----
+async function loadTop() {
+  const endpoint = $("top-endpoint").value;
+  const rows = await api(`/admin/api/top?days=${state.days}&endpoint=${encodeURIComponent(endpoint)}`);
+  const tbody = $("top");
+  tbody.replaceChildren();
+  if (!rows.length) tbody.append(el("tr", {}, el("td", { colspan: 3, class: "empty" }, "No queries in this range.")));
+  for (const r of rows) {
+    const open = () => openDetail(r.last_id);
+    tbody.append(el("tr", { class: "click", tabindex: 0, onclick: open, onkeydown: (ev) => ev.key === "Enter" && open() },
+      el("td", { class: "q" }, r.query), endpointCell(r.endpoint), el("td", { class: "num" }, fmt.format(r.count))));
+  }
+}
+
+// ---- Requests ----
+function resetRequests() { state.reqBefore = null; $("requests").replaceChildren(); loadRequests(); }
+async function loadRequests() {
+  const params = new URLSearchParams({ days: state.days, endpoint: $("req-endpoint").value, contains: $("req-search").value.trim() });
+  if (state.reqBefore) params.set("before", state.reqBefore);
+  const rows = await api(`/admin/api/requests?${params}`);
+  const tbody = $("requests");
+  if (!rows.length && !state.reqBefore) tbody.append(el("tr", {}, el("td", { colspan: 5, class: "empty" }, "No requests match.")));
+  for (const r of rows) {
+    const open = () => openDetail(r.id);
+    tbody.append(el("tr", { class: "click", tabindex: 0, onclick: open, onkeydown: (ev) => ev.key === "Enter" && open() },
+      el("td", { class: "time", title: new Date(r.ts).toISOString() }, new Date(r.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+      endpointCell(r.endpoint),
+      el("td", { class: "q" }, r.query || ""),
+      el("td", { class: "num" + (r.status >= 400 ? " bad" : "") }, r.status),
+      el("td", { class: "num" }, ms(r.duration_ms))));
+  }
+  state.reqBefore = rows.length ? rows[rows.length - 1].id : state.reqBefore;
+  $("more").hidden = rows.length < 50;
+}
+
+// ---- Detail and replay ----
+let current = null;
+async function openDetail(id) {
+  const dlg = $("detail");
+  $("detail-info").replaceChildren();
+  $("detail-body").replaceChildren();
+  $("replay-out").textContent = "Loading...";
+  $("replay-meta").textContent = "";
+  if (!dlg.open) dlg.showModal();
+  const r = await api(`/admin/api/requests/${id}`);
+  current = r;
+  $("detail-title").textContent = r.query ? `${r.endpoint}: ${r.query}` : r.endpoint;
+  const url = r.path + (r.query_string ? `?${r.query_string}` : "");
+  const rows = [["Time", `${new Date(r.ts).toLocaleString()} (${new Date(r.ts).toISOString()})`],
+    ["Request", `${r.method} ${url}`], ["Status Then", `${r.status} in ${ms(r.duration_ms)} ms`], ["Client", r.user_agent || "Unknown"]];
+  $("detail-info").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
+  if (r.body) {
+    let body = r.body;
+    try { body = JSON.stringify(JSON.parse(r.body), null, 2); } catch {}
+    $("detail-body").replaceChildren(el("h3", {}, "Request Body"), el("pre", {}, body));
+  }
+  replay();
+}
+
+let lastReplay = null;
+async function replay() {
+  if (!current) return;
+  const id = current.id;
+  $("replay-out").textContent = "Running the request...";
+  $("replay-meta").textContent = "";
+  $("raw-wrap").hidden = true;
+  try {
+    const res = await api(`/admin/api/requests/${id}/replay`);
+    if (!current || current.id !== id) return;
+    lastReplay = res;
+    $("replay-meta").replaceChildren(el("span", { class: res.status >= 400 ? "err" : "" }, `${res.status}`),
+      ` · ${ms(res.duration_ms)} ms · ${new Date().toLocaleTimeString()}${res.truncated ? " · cut at 2 MB" : ""}`);
+    renderReplay();
+  } catch (e) {
+    $("replay-out").replaceChildren(el("span", { class: "err" }, `Replay failed: ${e.message}`));
+  }
+}
+
+// MCP tool results come as JSON-RPC with the tool's text inside; show the
+// text unless Raw is ticked. Other JSON is pretty-printed.
+function renderReplay() {
+  const res = lastReplay, raw = $("raw").checked;
+  let json = null;
+  try { json = JSON.parse(res.body); } catch {}
+  const texts = json?.result?.content?.filter(c => c.type === "text").map(c => c.text);
+  $("raw-wrap").hidden = !(texts && texts.length);
+  if (texts && texts.length && !raw) $("replay-out").textContent = texts.join("\n\n");
+  else if (json) $("replay-out").textContent = JSON.stringify(json, null, 2);
+  else $("replay-out").textContent = res.body;
+}
+
+// ---- Wiring ----
+function setDays(days) {
+  state.days = days;
+  try { localStorage.setItem("admin-days", String(days)); } catch {}
+  for (const b of $("range").querySelectorAll("button")) b.setAttribute("aria-pressed", String(Number(b.dataset.days) === days));
+  refresh();
+}
+async function refresh() {
+  try {
+    await loadStats();
+    resetRequests();
+    await loadTop();
+  } catch (e) { console.error(e); }
+}
+$("range").addEventListener("click", (ev) => { const d = Number(ev.target.dataset.days); if (d) setDays(d); });
+$("top-endpoint").addEventListener("change", loadTop);
+$("req-endpoint").addEventListener("change", resetRequests);
+let searchTimer;
+$("req-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(resetRequests, 300); });
+$("more").addEventListener("click", loadRequests);
+$("detail-close").addEventListener("click", () => $("detail").close());
+$("detail").addEventListener("close", () => { current = null; });
+$("replay-again").addEventListener("click", replay);
+$("raw").addEventListener("change", renderReplay);
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => lastStats && drawChart(lastStats), 200); });
+api("/admin/api/me").then(me => { $("who").textContent = me.email; }).catch(() => {});
+setDays(state.days);
+</script>
+</body>
+</html>
