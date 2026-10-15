@@ -40,7 +40,8 @@ RUN apt-get update \
 ENV TZ=Etc/UTC \
     RUN_MODE=production
 
-RUN mkdir -p ${APP}
+# data/ holds the request log; deploy.yml mounts a volume there.
+RUN mkdir -p ${APP}/data
 
 COPY --from=builder /service/service ${APP}/service
 COPY --from=builder /service/all-MiniLM-L6-v2.onnx ${APP}/all-MiniLM-L6-v2.onnx

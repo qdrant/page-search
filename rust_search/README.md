@@ -88,3 +88,38 @@ Then connect a client to `http://localhost:8005/mcp`, for example
 
 `cargo test` runs the tools in-process against a fake site and canned search
 results, without Qdrant or network access.
+
+## Admin panel
+
+`/admin` shows statistics of the requests to `/api/search`, `/md`, `/skills`,
+`/snippets/search`, and `/mcp`: requests per day by endpoint, errors,
+latencies, and the most frequent queries. Selecting a request runs it again
+and shows what the service returns for it now. Responses aren't stored.
+
+Requests are logged to SQLite, `data/requests.sqlite` in the working
+directory, which is `/service/data` in the container. `deploy.yml` mounts the
+`qdrant-site-search-data` volume there so the log survives deploys. Records
+older than the retention period are deleted hourly. The log keeps the request
+path, query string, status, latency, and user agent, plus the JSON-RPC body
+of MCP requests. It doesn't keep IP addresses.
+
+Admins sign in with Google. Accounts from `ADMIN_ALLOWED_DOMAINS` (checked
+against Google's hosted-domain claim, so only Workspace accounts of that
+domain) or listed in `ADMIN_ALLOWED_EMAILS` get in; a sign-in lasts 12 hours.
+Without the OAuth settings or an allow list, `/admin` answers 503 and the rest
+of the service works as before.
+
+| Variable | Default | |
+|---|---|---|
+| `GOOGLE_OAUTH_CLIENT_ID` | | OAuth client of type "Web application" in GCP |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | | |
+| `ADMIN_SESSION_KEY` | | Random secret of at least 32 bytes, such as `openssl rand -hex 32`. Changing it signs everyone out |
+| `ADMIN_ALLOWED_DOMAINS` | | Comma-separated Workspace domains. `deploy.yml` sets `qdrant.com` |
+| `ADMIN_ALLOWED_EMAILS` | | Comma-separated accounts allowed whatever their domain |
+| `ADMIN_PUBLIC_URL` | `https://search.qdrant.tech` | Where the service is reached. The OAuth client needs `<ADMIN_PUBLIC_URL>/admin/auth/callback` as an authorized redirect URI |
+| `REQUEST_LOG_PATH` | `data/requests.sqlite` | |
+| `REQUEST_LOG_RETENTION_DAYS` | `90` | |
+
+To try it locally, create an OAuth client with
+`http://localhost:8005/admin/auth/callback` as a redirect URI and set
+`ADMIN_PUBLIC_URL=http://localhost:8005`.

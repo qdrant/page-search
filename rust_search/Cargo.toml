@@ -18,7 +18,7 @@ name = "setup_collection"
 path = "src/setup_collection.rs"
 
 [dependencies]
-actix-web = "4.3.1"
+actix-web = "4.9"
 actix-cors = "0.6.4"
 anyhow = "1.0.71"
 env_logger = "0.10.0"
@@ -41,6 +41,10 @@ rmcp = { version = "3.5", default-features = false, features = ["server", "macro
 rmcp-actix-web = "0.13"
 schemars = "1"
 url = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+actix-session = { version = "0.10", features = ["cookie-session"] }
+rand = "0.8"
+actix-http = "3"
 
 [dev-dependencies]
 rmcp = { version = "3.5", default-features = false, features = ["client", "server", "macros", "schemars"] }
