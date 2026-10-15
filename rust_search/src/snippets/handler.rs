@@ -34,12 +34,14 @@ fn parse_snippets(points: Vec<ScoredPoint>) -> Vec<Snippet> {
         .collect()
 }
 
-async fn search_snippets(
+/// Hybrid search over the snippets: the dense vector embeds the description,
+/// the sparse one the code. Without a language, snippets in every language.
+pub async fn search_snippets(
     client: &Qdrant,
     query: &str,
-    language: &str,
+    language: Option<&str>,
     limit: u64,
-) -> anyhow::Result<SnippetSearchResult> {
+) -> anyhow::Result<Vec<Snippet>> {
     let mut bm25_doc = Document::new(query, "qdrant/bm25");
     bm25_doc.options.insert(
         "language".to_string(),
@@ -47,38 +49,38 @@ async fn search_snippets(
             kind: Some(Kind::StringValue("none".to_string())),
         },
     );
+    let prefetch_limit = limit.max(20);
 
-    let result = client
-        .query(
-            QueryPointsBuilder::new(SNIPPET_COLLECTION_NAME)
-                .add_prefetch(
-                    PrefetchQueryBuilder::default()
-                        .query(VectorInput::from(Document::new(query, SNIPPET_ENCODER)))
-                        .using("dense")
-                        .limit(20u64)
-                        .build(),
-                )
-                .add_prefetch(
-                    PrefetchQueryBuilder::default()
-                        .query(VectorInput::from(bm25_doc))
-                        .using("sparse")
-                        .limit(20u64)
-                        .build(),
-                )
-                .query(qdrant_client::qdrant::Query::new_rrf(Rrf {
-                    k: Some(1),
-                    ..Default::default()
-                }))
-                .filter(Filter::must(vec![Condition::matches(
-                    "language",
-                    MatchValue::Keyword(language.to_string()),
-                )]))
-                .limit(limit)
-                .with_payload(true),
+    let mut request = QueryPointsBuilder::new(SNIPPET_COLLECTION_NAME)
+        .add_prefetch(
+            PrefetchQueryBuilder::default()
+                .query(VectorInput::from(Document::new(query, SNIPPET_ENCODER)))
+                .using("dense")
+                .limit(prefetch_limit)
+                .build(),
         )
-        .await?;
+        .add_prefetch(
+            PrefetchQueryBuilder::default()
+                .query(VectorInput::from(bm25_doc))
+                .using("sparse")
+                .limit(prefetch_limit)
+                .build(),
+        )
+        .query(qdrant_client::qdrant::Query::new_rrf(Rrf {
+            k: Some(1),
+            ..Default::default()
+        }))
+        .limit(limit)
+        .with_payload(true);
+    if let Some(language) = language {
+        request = request.filter(Filter::must(vec![Condition::matches(
+            "language",
+            MatchValue::Keyword(language.to_string()),
+        )]));
+    }
 
-    Ok(SnippetSearchResult(parse_snippets(result.result)))
+    let result = client.query(request).await?;
+    Ok(parse_snippets(result.result))
 }
 
 fn resolve_format(format_param: Option<&str>, accept: Option<&str>) -> &'static str {
@@ -118,7 +120,10 @@ pub async fn search_handler(
     let accept = req.headers().get("accept").and_then(|v| v.to_str().ok());
     let fmt = resolve_format(format.as_deref(), accept);
 
-    match search_snippets(qdrant.get_ref(), &q, &language, limit).await {
+    match search_snippets(qdrant.get_ref(), &q, Some(&language), limit)
+        .await
+        .map(SnippetSearchResult)
+    {
         Ok(result) => {
             log::info!("snippets={}", result.0.len());
             if fmt == "json" {

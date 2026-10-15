@@ -40,16 +40,21 @@ documentation, articles, the blog, and courses. `search_docs` takes a
 `sources` argument to narrow the search to some of them, and
 `DOCS_MCP_SOURCES` decides which of them the server serves at all.
 
-It has three read-only tools:
+It has four read-only tools:
 
 | Tool | What it does |
 |---|---|
-| `search_docs(query, sources?, partition?, limit?)` | Searches the `site` collection the same way as `/api/search`, one query per source, and returns one result per page with the headings and passages that matched |
-| `get_page(page)` | Returns a page's Markdown from `<page>/index.md` on the site, resolving old URLs through the page index |
-| `list_docs(section?, offset?, limit?)` | Browses the page index: docs and courses in sidebar order, articles and blog posts newest first |
+| `search_docs(query, sources?, partition?, limit?, format?)` | Searches the `site` collection the same way as `/api/search`, one query per source, and returns one result per page with the headings and passages that matched |
+| `search_snippets(query, language?, limit?, format?)` | Searches the `snippet-search` collection the same way as `/snippets/search`, with the language optional, and returns code examples with their descriptions and pages |
+| `get_page(page)` | Returns a page's Markdown from `<page>/index.md` on the site, resolving old URLs through the page index. Also reads the full snippet pages under `/documentation/snippets/` |
+| `list_docs(section?, offset?, limit?, format?)` | Browses the page index: docs and courses in sidebar order, articles and blog posts newest first |
+
+Tools answer in Markdown by default. `format: "json"` returns the same result
+as JSON, in both the text and the structured content. `get_page` returns
+Markdown only. New tools should offer both formats where a JSON form makes sense.
 
 Pages and the page index (`/docs-manifest.json`, built by the landing_page
-repository) are fetched from the site, not from Qdrant. Only search uses Qdrant.
+repository) are fetched from the site, not from Qdrant. Only the two search tools use Qdrant.
 
 Settings, from the environment, in addition to the service's own:
 

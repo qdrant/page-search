@@ -15,13 +15,16 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{DocsServer, SearchBackend, Source};
 use crate::docs_mcp::config::{Config, SOURCES};
+use crate::snippets::Snippet;
 
 /// Canned search results per source, recording the source and partitions of
-/// each request.
+/// each request, and canned snippets, recording the language of each request.
 #[derive(Default)]
 pub struct FixedSearch {
     results: HashMap<String, Vec<ScoredPoint>>,
     pub requests: Mutex<Vec<(String, Vec<String>)>>,
+    snippets: Vec<Value>,
+    pub snippet_requests: Mutex<Vec<Option<String>>>,
 }
 
 impl FixedSearch {
@@ -32,6 +35,50 @@ impl FixedSearch {
             .push((source.to_string(), partitions.to_vec()));
         self.results.get(source).cloned().unwrap_or_default()
     }
+
+    pub fn search_snippets(&self, language: Option<&str>) -> Vec<Snippet> {
+        self.snippet_requests
+            .lock()
+            .unwrap()
+            .push(language.map(str::to_string));
+        self.snippets
+            .iter()
+            .filter(|s| language.is_none_or(|l| s["language"] == l))
+            .map(|s| serde_json::from_value(s.clone()).unwrap())
+            .collect()
+    }
+}
+
+fn snippet(url: &str, language: &str, code: &str) -> Value {
+    json!({
+        "code": code,
+        "language": language,
+        "version": "latest",
+        "revision": 1,
+        "package_name": "qdrant-client",
+        "source": {"url": url, "hash": "abc", "lines": [10, 20]},
+        "context": {"before": "", "after": ""},
+        "description": format!("Runs a hybrid query in {language}."),
+    })
+}
+
+fn snippets() -> Vec<Value> {
+    let page = "https://qdrant.tech/documentation/search/hybrid-queries/";
+    vec![
+        snippet(page, "python", "client.query_points(prefetch=[...])\n"),
+        snippet(
+            page,
+            "rust",
+            "client.query(QueryPointsBuilder::new(\"c\")).await?;",
+        ),
+        // The same code on another page.
+        snippet(
+            "https://qdrant.tech/documentation/search/filtering/",
+            "python",
+            "client.query_points(prefetch=[...])",
+        ),
+        snippet("https://qdrant.tech/blog/new-post/", "python", "print(```)"),
+    ]
 }
 
 fn hit(url: &str, title: &str, text: &str) -> ScoredPoint {
@@ -83,7 +130,8 @@ fn search_results() -> FixedSearch {
                 vec![hit("/blog/new-post/", "New Post", "Hybrid is here")],
             ),
         ]),
-        requests: Mutex::default(),
+        snippets: snippets(),
+        ..FixedSearch::default()
     }
 }
 
@@ -241,7 +289,7 @@ async fn search_groups_matches_by_page_and_keeps_only_docs() {
     let result = h
         .call(
             "search_docs",
-            json!({"query": "hybrid", "sources": ["documentation"], "partition": "develop"}),
+            json!({"query": "hybrid", "sources": ["documentation"], "partition": "develop", "format": "json"}),
         )
         .await;
     let hits = results(&result);
@@ -276,7 +324,7 @@ async fn search_keeps_a_few_matches_per_page() {
     let result = h
         .call(
             "search_docs",
-            json!({"query": "filter", "sources": ["documentation"]}),
+            json!({"query": "filter", "sources": ["documentation"], "format": "json"}),
         )
         .await;
     assert_eq!(results(&result)[0]["matches"].as_array().unwrap().len(), 5);
@@ -288,7 +336,7 @@ async fn search_queries_each_source_and_interleaves() {
     let result = h
         .call(
             "search_docs",
-            json!({"query": "hybrid", "partition": "develop"}),
+            json!({"query": "hybrid", "partition": "develop", "format": "json"}),
         )
         .await;
     let hits: Vec<(String, String)> = results(&result)
@@ -321,7 +369,7 @@ async fn search_can_pick_sources() {
     let result = h
         .call(
             "search_docs",
-            json!({"query": "hybrid", "sources": ["blog"]}),
+            json!({"query": "hybrid", "sources": ["blog"], "format": "json"}),
         )
         .await;
     let titles: Vec<Value> = results(&result)
@@ -598,4 +646,190 @@ async fn list_docs_pages_through_long_sections() {
         ]
     );
     assert!(is_error(&past));
+}
+
+#[tokio::test]
+async fn search_returns_markdown_by_default() {
+    let h = Harness::new(true).await;
+    let result = h
+        .call(
+            "search_docs",
+            json!({"query": "hybrid", "sources": ["documentation"]}),
+        )
+        .await;
+    assert!(result.structured_content.is_none());
+    let expected = format!(
+        "## Hybrid Queries\n{base}/documentation/search/hybrid-queries/ (documentation, develop)\n\
+         - Hybrid Search\n- Fusion\n\n\
+         ## Filtering\n{base}/documentation/search/filtering/ (documentation, develop)\n\
+         - Filter and search",
+        base = h.base()
+    );
+    assert_eq!(text(&result), expected);
+}
+
+#[tokio::test]
+async fn search_without_results() {
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let body = h.text("search_docs", json!({"query": "nothing"})).await;
+    assert!(body.starts_with("No results."), "{body}");
+    let result = h
+        .call("search_docs", json!({"query": "nothing", "format": "json"}))
+        .await;
+    assert_eq!(result.structured_content, Some(json!({"results": []})));
+}
+
+#[tokio::test]
+async fn list_docs_as_json() {
+    let h = Harness::new(true).await;
+    let sections = h.call("list_docs", json!({"format": "json"})).await;
+    let sections = &sections.structured_content.unwrap()["sections"];
+    let search = sections
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["path"] == "/documentation/search/")
+        .unwrap();
+    assert_eq!(
+        *search,
+        json!({"path": "/documentation/search/", "title": "Search", "pages": 3,
+               "partition": "develop", "description": "Search Qdrant."})
+    );
+
+    let faq = h
+        .call("list_docs", json!({"section": "faq", "format": "json"}))
+        .await;
+    assert_eq!(
+        faq.structured_content.unwrap(),
+        json!({
+            "section": "/documentation/faq/", "total": 2, "offset": 0,
+            "pages": [
+                {"title": "FAQ", "path": "/documentation/faq/", "depth": 0,
+                 "partition": "develop", "has_page": false},
+                {"title": "Basics", "path": "/documentation/faq/basics/", "depth": 1},
+            ],
+        })
+    );
+
+    let blog = h
+        .call(
+            "list_docs",
+            json!({"section": "/blog/", "limit": 2, "format": "json"}),
+        )
+        .await;
+    let blog = blog.structured_content.unwrap();
+    assert_eq!(blog["next_offset"], 2);
+    assert_eq!(blog["pages"][1]["date"], "2026-01-01");
+    assert!(blog["pages"][1].get("depth").is_none());
+}
+
+#[tokio::test]
+async fn search_snippets_in_markdown() {
+    let h = Harness::new(true).await;
+    let body = h
+        .text(
+            "search_snippets",
+            json!({"query": "hybrid query", "language": "Py"}),
+        )
+        .await;
+    assert_eq!(
+        *h.search.snippet_requests.lock().unwrap(),
+        [Some("python".to_string())]
+    );
+    // The same code on another page is left out.
+    let expected = format!(
+        "## Hybrid Queries (python)\n{base}/documentation/search/hybrid-queries/\n\n\
+         Runs a hybrid query in python.\n\n\
+         ```python\nclient.query_points(prefetch=[...])\n```\n\n\
+         ## New Post (python)\n{base}/blog/new-post/\n\n\
+         Runs a hybrid query in python.\n\n\
+         ````python\nprint(```)\n````",
+        base = h.base()
+    );
+    assert_eq!(body, expected);
+}
+
+#[tokio::test]
+async fn search_snippets_as_json_in_all_languages() {
+    let h = Harness::new(true).await;
+    let result = h
+        .call(
+            "search_snippets",
+            json!({"query": "hybrid query", "limit": 2, "format": "json"}),
+        )
+        .await;
+    assert_eq!(*h.search.snippet_requests.lock().unwrap(), [None]);
+    let hits = results(&result);
+    assert_eq!(
+        hits[1],
+        json!({
+            "language": "rust",
+            "code": "client.query(QueryPointsBuilder::new(\"c\")).await?;",
+            "description": "Runs a hybrid query in rust.",
+            "title": "Hybrid Queries",
+            "url": format!("{}/documentation/search/hybrid-queries/", h.base()),
+        })
+    );
+    assert_eq!(hits.len(), 2);
+}
+
+#[tokio::test]
+async fn search_snippets_only_from_served_sources() {
+    let h = Harness::serving(&["blog"], true, search_results()).await;
+    let result = h
+        .call(
+            "search_snippets",
+            json!({"query": "hybrid", "format": "json"}),
+        )
+        .await;
+    let urls: Vec<Value> = results(&result).iter().map(|h| h["url"].clone()).collect();
+    assert_eq!(urls, [json!(format!("{}/blog/new-post/", h.base()))]);
+
+    let empty = h
+        .text(
+            "search_snippets",
+            json!({"query": "hybrid", "language": "go"}),
+        )
+        .await;
+    assert!(empty.starts_with("No snippets found."), "{empty}");
+}
+
+#[tokio::test]
+async fn format_is_a_plain_enum_argument() {
+    let h = Harness::new(true).await;
+    for tool in h.client.list_all_tools().await.unwrap() {
+        let format = &tool.input_schema["properties"]["format"];
+        if tool.name == "get_page" {
+            assert!(format.is_null(), "{format}");
+        } else {
+            assert_eq!(format["enum"], json!(["markdown", "json"]), "{}", tool.name);
+        }
+    }
+}
+
+#[tokio::test]
+async fn get_page_reads_snippet_pages() {
+    let h = Harness::new(true).await;
+    Mock::given(method("GET"))
+        .and(path("/documentation/snippets/query-points/hybrid-rrf/index.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "# Code snippet: query-points/hybrid-rrf\n\n## Qdrant Server\n\n```go\nclient.Query()\n```\n",
+        ))
+        .mount(&h.site)
+        .await;
+    // Snippet pages aren't in the page index, so there is no title.
+    let body = h
+        .text(
+            "get_page",
+            json!({"page": "https://qdrant.tech/documentation/snippets/query-points/hybrid-rrf/index.md"}),
+        )
+        .await;
+    assert!(
+        body.starts_with(&format!(
+            "Source: {}/documentation/snippets/query-points/hybrid-rrf/",
+            h.base()
+        )),
+        "{body}"
+    );
+    assert!(body.contains("```go\nclient.Query()\n```"));
 }

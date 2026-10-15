@@ -95,7 +95,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    fn resolve<'a>(&'a self, path: &'a str) -> &'a str {
+    pub fn resolve<'a>(&'a self, path: &'a str) -> &'a str {
         self.aliases.get(path).map(String::as_str).unwrap_or(path)
     }
 }
