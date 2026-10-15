@@ -1,4 +1,4 @@
-//! The MCP server: three read-only tools over the content published on qdrant.tech.
+//! The MCP server: four read-only tools over the content published on qdrant.tech.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,16 +10,18 @@ use qdrant_client::Qdrant;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    Implementation, InitializeRequestParams, InitializeResult, ServerCapabilities, ServerConfig,
+    CallToolResult, ContentBlock, Implementation, InitializeRequestParams, InitializeResult,
+    ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, Json, RoleServer, ServerHandler};
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::site::{check_enabled, source_of, DocPage, SiteClient};
+use super::site::{check_enabled, normalize_path, source_of, DocPage, SiteClient};
 use crate::embedding::QueryEncoder;
-use crate::search;
+use crate::snippets::Snippet;
+use crate::{search, snippets};
 
 fn source_description(source: &str) -> &'static str {
     match source {
@@ -45,8 +47,10 @@ is the authority on current behavior; other sources can be older than the
 release they describe.
 
 Typical flow: search_docs to find the relevant pages, then get_page to read
-them in full. Use list_docs to browse when search terms are unclear.
-Cite the page URLs you relied on.
+them in full. Use list_docs to browse when search terms are unclear, and
+search_snippets to find code examples in a given language. Documentation
+pages link to full snippet pages with the same example in every client
+language; get_page reads those too. Cite the page URLs you relied on.
 ";
 
 /// A part of qdrant.tech that can be searched.
@@ -110,6 +114,31 @@ impl Partition {
     }
 }
 
+/// How a tool returns its result.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(inline)]
+pub enum Format {
+    #[default]
+    Markdown,
+    Json,
+}
+
+/// The result as Markdown text, or as JSON in both the text and the
+/// structured content.
+fn respond<T: Serialize>(
+    format: Format,
+    value: &T,
+    markdown: impl FnOnce(&T) -> String,
+) -> Result<CallToolResult, String> {
+    Ok(match format {
+        Format::Markdown => CallToolResult::success(vec![ContentBlock::text(markdown(value))]),
+        Format::Json => CallToolResult::structured(
+            serde_json::to_value(value).map_err(|e| format!("Could not encode the result: {e}"))?,
+        ),
+    })
+}
+
 /// Matches kept per page: enough to show why it matched, without repeating
 /// every heading of a long page.
 const MAX_MATCHES: usize = 5;
@@ -136,6 +165,9 @@ pub struct SearchArgs {
     #[serde(default = "default_search_limit")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: u64,
+    /// markdown (the default), or json for the same results as structured data.
+    #[serde(default)]
+    pub format: Format,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -161,9 +193,33 @@ pub struct ListDocsArgs {
     #[serde(default = "default_list_limit")]
     #[schemars(range(min = 1, max = 200))]
     pub limit: usize,
+    /// markdown (the default), or json for the same listing as structured data.
+    #[serde(default)]
+    pub format: Format,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+fn default_snippet_limit() -> u64 {
+    5
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchSnippetsArgs {
+    /// What the code should do, in natural language or keywords, such as "create a collection with sparse vectors".
+    pub query: String,
+    /// The language of the code: python, typescript, rust, java, csharp, go, http (the REST API), shell, and so on. Leave it out to search all languages.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub language: Option<String>,
+    /// Maximum number of snippets to return.
+    #[serde(default = "default_snippet_limit")]
+    #[schemars(range(min = 1, max = 20))]
+    pub limit: u64,
+    /// markdown (the default), or json for the same snippets as structured data.
+    #[serde(default)]
+    pub format: Format,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SearchHit {
     pub source: String,
     pub title: String,
@@ -174,9 +230,75 @@ pub struct SearchHit {
     pub markdown_url: String,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize)]
 pub struct SearchResults {
     pub results: Vec<SearchHit>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SectionEntry {
+    pub path: String,
+    pub title: String,
+    pub pages: usize,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub partition: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SectionList {
+    pub sections: Vec<SectionEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PageEntry {
+    pub title: String,
+    pub path: String,
+    /// Nesting below the section, in sections listed in sidebar order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub partition: String,
+    /// False for a section that only groups the pages that follow.
+    #[serde(skip_serializing_if = "is_true")]
+    pub has_page: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+#[derive(Debug, Serialize)]
+pub struct PageList {
+    pub section: String,
+    pub total: usize,
+    pub offset: usize,
+    pub pages: Vec<PageEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SnippetHit {
+    pub language: String,
+    pub code: String,
+    /// What the code does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The title of the page the snippet is on.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SnippetResults {
+    pub results: Vec<SnippetHit>,
 }
 
 fn payload_str(payload: &HashMap<String, Value>, key: &str) -> Option<String> {
@@ -247,7 +369,7 @@ impl DocsServer {
     async fn search_docs(
         &self,
         Parameters(args): Parameters<SearchArgs>,
-    ) -> Result<Json<SearchResults>, String> {
+    ) -> Result<CallToolResult, String> {
         let query = args.query.trim();
         if query.is_empty() {
             return Err("The search query is empty.".to_string());
@@ -308,7 +430,84 @@ impl DocsServer {
             }
         }
         hits.truncate(limit as usize);
-        Ok(Json(SearchResults { results: hits }))
+        respond(
+            args.format,
+            &SearchResults { results: hits },
+            search_markdown,
+        )
+    }
+
+    /// Find code examples in Qdrant content: the documentation, articles, the blog, and courses.
+    ///
+    /// Each result is a code snippet with a description of what it does and the page it is on. Pass a language to get examples for one client. Documentation pages usually show an example in one language and link to a full snippet page with it in every client language; read that with get_page.
+    #[tool(annotations(
+        read_only_hint = true,
+        destructive_hint = false,
+        idempotent_hint = true,
+        open_world_hint = true
+    ))]
+    async fn search_snippets(
+        &self,
+        Parameters(args): Parameters<SearchSnippetsArgs>,
+    ) -> Result<CallToolResult, String> {
+        let query = args.query.trim();
+        if query.is_empty() {
+            return Err("The search query is empty.".to_string());
+        }
+        let language = args
+            .language
+            .as_deref()
+            .map(normalize_language)
+            .filter(|l| !l.is_empty());
+        let limit = args.limit.clamp(1, 20) as usize;
+        // Ask for more than needed: the same code can be on several pages,
+        // and some pages may be in sources this server doesn't serve.
+        let found: Vec<Snippet> = match &self.search {
+            SearchBackend::Qdrant { client, .. } => {
+                snippets::search_snippets(client, query, language.as_deref(), limit as u64 * 2)
+                    .await
+                    .map_err(|e| format!("Snippet search is unavailable: {e}"))?
+            }
+            #[cfg(test)]
+            SearchBackend::Fixed(fixed) => fixed.search_snippets(language.as_deref()),
+        };
+
+        // Titles are a nicety: search still works if the page index doesn't load.
+        let manifest = self.site.manifest().await.ok();
+        let mut hits: Vec<SnippetHit> = Vec::new();
+        for snippet in found {
+            let Ok(path) = normalize_path(&snippet.source.url, None) else {
+                continue;
+            };
+            let served = self.site.sources().iter().any(|s| s == source_of(&path));
+            let code = snippet.code.trim_end().to_string();
+            let repeated = hits
+                .iter()
+                .any(|h| h.language == snippet.language && h.code == code);
+            if !served || repeated {
+                continue;
+            }
+            let title = manifest
+                .as_ref()
+                .and_then(|m| m.pages.get(m.resolve(&path)))
+                .map(|page| page.title.clone())
+                .unwrap_or_default();
+            hits.push(SnippetHit {
+                language: snippet.language,
+                code,
+                description: snippet.description.map(|d| d.trim().to_string()),
+                title,
+                url: self.site.url(&path),
+            });
+            if hits.len() == limit {
+                break;
+            }
+        }
+        respond(
+            args.format,
+            &SnippetResults { results: hits },
+            snippets_markdown,
+        )
     }
 
     /// Read one page in full, as Markdown, including its code examples.
@@ -352,29 +551,27 @@ impl DocsServer {
     async fn list_docs(
         &self,
         Parameters(args): Parameters<ListDocsArgs>,
-    ) -> Result<String, String> {
+    ) -> Result<CallToolResult, String> {
         let section = args.section.as_deref().unwrap_or_default();
         if matches!(section.trim_matches('/'), "" | "documentation") {
-            let rows: Vec<String> = self
+            let sections = self
                 .site
                 .list_sections()
                 .await?
-                .iter()
-                .map(|(page, count)| {
-                    let mut row = section_row(page, *count);
-                    if is_docs_with_partition(page) {
-                        row.push_str(&format!(" [{}]", page.partition));
-                    }
-                    if !page.description.is_empty() {
-                        row.push_str(&format!(". {}", page.description));
-                    }
-                    row
+                .into_iter()
+                .map(|(page, count)| SectionEntry {
+                    partition: if is_docs_with_partition(&page) {
+                        page.partition
+                    } else {
+                        String::new()
+                    },
+                    path: page.path,
+                    title: page.title,
+                    pages: count,
+                    description: page.description,
                 })
                 .collect();
-            return Ok(format!(
-                "Top-level sections. Pass a section path to list_docs to see its pages.\n\n{}",
-                rows.join("\n")
-            ));
+            return respond(args.format, &SectionList { sections }, sections_markdown);
         }
 
         let (pages, nested) = self.site.list_pages(section).await?;
@@ -391,41 +588,170 @@ impl DocsServer {
             .min()
             .unwrap_or(0);
         let end = (args.offset + args.limit.clamp(1, 200)).min(total);
-        let mut rows: Vec<String> = pages[args.offset..end]
+        let entries = pages[args.offset..end]
             .iter()
-            .map(|p| {
-                let indent = if nested {
-                    "  ".repeat(p.path.matches('/').count() - base_depth)
+            .map(|p| PageEntry {
+                title: p.title.clone(),
+                path: p.path.clone(),
+                depth: nested.then(|| p.path.matches('/').count() - base_depth),
+                date: p.date.clone().filter(|_| !nested),
+                partition: if p.source() == "documentation" {
+                    p.partition.clone()
                 } else {
                     String::new()
-                };
-                let mut line = format!("{indent}- {}: {}", p.title, p.path);
-                if let Some(date) = p.date.as_ref().filter(|_| !nested) {
-                    line.push_str(&format!(" ({date})"));
-                }
-                if !p.partition.is_empty() && p.source() == "documentation" {
-                    line.push_str(&format!(" [{}]", p.partition));
-                }
-                if !p.rendered {
-                    line.push_str(" (groups the pages that follow, no page of its own)");
-                }
-                if !p.description.is_empty() {
-                    line.push_str(&format!(". {}", p.description));
-                }
-                line
+                },
+                has_page: p.rendered,
+                description: p.description.clone(),
             })
             .collect();
-        if args.offset > 0 || end < total {
-            let mut footer = format!("\nShowing {}-{end} of {total}.", args.offset + 1);
-            if end < total {
-                footer.push_str(&format!(
-                    " Call list_docs with offset {end} for the next ones."
-                ));
-            }
-            rows.push(footer);
-        }
-        Ok(rows.join("\n"))
+        let list = PageList {
+            section: self.site.normalize(section)?,
+            total,
+            offset: args.offset,
+            pages: entries,
+            next_offset: (end < total).then_some(end),
+        };
+        respond(args.format, &list, pages_markdown)
     }
+}
+
+/// Collapse a passage onto one line, to keep it inside a list item.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn search_markdown(results: &SearchResults) -> String {
+    if results.results.is_empty() {
+        return "No results. Try other terms, or browse with list_docs.".to_string();
+    }
+    results
+        .results
+        .iter()
+        .map(|hit| {
+            let mut labels = vec![hit.source.as_str()];
+            if !hit.partition.is_empty() {
+                labels.push(&hit.partition);
+            }
+            let title = if hit.title.is_empty() {
+                &hit.url
+            } else {
+                &hit.title
+            };
+            let mut block = format!("## {title}\n{} ({})", hit.url, labels.join(", "));
+            for text in &hit.matches {
+                block.push_str(&format!("\n- {}", one_line(text)));
+            }
+            block
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn sections_markdown(list: &SectionList) -> String {
+    let rows: Vec<String> = list
+        .sections
+        .iter()
+        .map(|s| {
+            let mut row = section_row(&s.path, &s.title, s.pages);
+            if !s.partition.is_empty() {
+                row.push_str(&format!(" [{}]", s.partition));
+            }
+            if !s.description.is_empty() {
+                row.push_str(&format!(". {}", s.description));
+            }
+            row
+        })
+        .collect();
+    format!(
+        "Top-level sections. Pass a section path to list_docs to see its pages.\n\n{}",
+        rows.join("\n")
+    )
+}
+
+fn pages_markdown(list: &PageList) -> String {
+    let mut rows: Vec<String> = list
+        .pages
+        .iter()
+        .map(|p| {
+            let indent = "  ".repeat(p.depth.unwrap_or(0));
+            let mut line = format!("{indent}- {}: {}", p.title, p.path);
+            if let Some(date) = &p.date {
+                line.push_str(&format!(" ({date})"));
+            }
+            if !p.partition.is_empty() {
+                line.push_str(&format!(" [{}]", p.partition));
+            }
+            if !p.has_page {
+                line.push_str(" (groups the pages that follow, no page of its own)");
+            }
+            if !p.description.is_empty() {
+                line.push_str(&format!(". {}", p.description));
+            }
+            line
+        })
+        .collect();
+    let end = list.offset + list.pages.len();
+    if list.offset > 0 || list.next_offset.is_some() {
+        let mut footer = format!("\nShowing {}-{end} of {}.", list.offset + 1, list.total);
+        if let Some(next) = list.next_offset {
+            footer.push_str(&format!(
+                " Call list_docs with offset {next} for the next ones."
+            ));
+        }
+        rows.push(footer);
+    }
+    rows.join("\n")
+}
+
+fn snippets_markdown(results: &SnippetResults) -> String {
+    if results.results.is_empty() {
+        return "No snippets found. Try other terms or another language, or search_docs."
+            .to_string();
+    }
+    results
+        .results
+        .iter()
+        .map(|hit| {
+            let title = if hit.title.is_empty() {
+                &hit.url
+            } else {
+                &hit.title
+            };
+            let mut block = format!("## {title} ({})\n{}\n", hit.language, hit.url);
+            if let Some(description) = &hit.description {
+                block.push_str(&format!("\n{description}\n"));
+            }
+            // A fence longer than any run of backticks in the code.
+            let longest = hit
+                .code
+                .split(|c| c != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            let fence = "`".repeat(longest.max(2) + 1);
+            block.push_str(&format!("\n{fence}{}\n{}\n{fence}", hit.language, hit.code));
+            block
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Spell a language the way the snippet index does, accepting common
+/// abbreviations.
+fn normalize_language(language: &str) -> String {
+    let language = language.trim().to_lowercase();
+    match language.as_str() {
+        "py" => "python",
+        "ts" => "typescript",
+        "js" | "jsx" => "javascript",
+        "rs" => "rust",
+        "c#" | "cs" | "dotnet" | ".net" => "csharp",
+        "golang" => "go",
+        "rest" | "http request" => "http",
+        "bash" | "sh" | "console" | "env" => "shell",
+        other => other,
+    }
+    .to_string()
 }
 
 fn source_list(sources: &[String]) -> String {
@@ -437,11 +763,9 @@ fn source_list(sources: &[String]) -> String {
 }
 
 /// A top-level section as a list row, without its partition or description.
-fn section_row(page: &DocPage, count: usize) -> String {
+fn section_row(path: &str, title: &str, count: usize) -> String {
     format!(
-        "- {}: {} ({count} {})",
-        page.path,
-        page.title,
+        "- {path}: {title} ({count} {})",
         if count == 1 { "page" } else { "pages" }
     )
 }
@@ -457,7 +781,7 @@ fn structure(sections: &[(DocPage, usize)]) -> String {
         sections
             .iter()
             .filter(|(page, _)| keep(page))
-            .map(|(page, count)| section_row(page, *count))
+            .map(|(page, count)| section_row(&page.path, &page.title, *count))
             .collect::<Vec<_>>()
             .join("\n")
     };
