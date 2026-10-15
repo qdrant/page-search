@@ -115,16 +115,32 @@ pub fn stats(conn: &Connection, since: i64) -> rusqlite::Result<Stats> {
     })
 }
 
+/// How soon after a search a longer one that starts with it makes it a
+/// partial query, typed on the way to the longer one.
+const PARTIAL_QUERY_WINDOW_MS: i64 = 10_000;
+
+/// The most frequent queries, leaving out partial queries: the search box
+/// searches as you type, so "qu" and "quan" come before "quantization".
+/// The log has no client IPs, so the same user agent stands in for the
+/// same client.
 pub fn top_queries(
     conn: &Connection,
     since: i64,
     endpoint: Option<&str>,
     limit: u32,
 ) -> rusqlite::Result<Vec<TopQuery>> {
-    let mut sql = "SELECT endpoint, query, COUNT(*) AS c, MAX(id) FROM requests
-                   WHERE ts >= ? AND query IS NOT NULL AND query != ''"
+    let mut sql = "SELECT endpoint, query, COUNT(*) AS c, MAX(id) FROM requests AS r
+                   WHERE ts >= ? AND query IS NOT NULL AND query != ''
+                   AND NOT (endpoint = 'search' AND EXISTS (
+                       SELECT 1 FROM requests AS n
+                       WHERE n.endpoint = 'search'
+                         AND n.ts BETWEEN r.ts AND r.ts + ?
+                         AND n.user_agent IS r.user_agent
+                         AND length(n.query) > length(r.query)
+                         AND lower(substr(n.query, 1, length(r.query))) = lower(r.query)))"
         .to_string();
-    let mut values: Vec<rusqlite::types::Value> = vec![since.into()];
+    let mut values: Vec<rusqlite::types::Value> =
+        vec![since.into(), PARTIAL_QUERY_WINDOW_MS.into()];
     if let Some(endpoint) = endpoint {
         let (clause, value) = endpoint_clause(endpoint);
         sql.push_str(&format!(" AND {clause}"));
@@ -172,4 +188,52 @@ pub fn list(conn: &Connection, filter: &RequestFilter) -> rusqlite::Result<Vec<R
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<RequestRecord>> {
     conn.query_row("SELECT * FROM requests WHERE id = ?1", [id], row_to_record)
         .optional()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn search(conn: &Connection, ts: i64, query: &str, user_agent: &str) {
+        conn.execute(
+            "INSERT INTO requests (ts, endpoint, query, method, path, query_string, status, duration_ms, user_agent)
+             VALUES (?1, 'search', ?2, 'GET', '/api/search', '', 200, 1.0, ?3)",
+            params![ts, query, user_agent],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn top_queries_leave_out_partial_queries() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::request_log::store::SCHEMA).unwrap();
+        // Typed on the way to "quantization".
+        search(&conn, 1_000, "qu", "firefox");
+        search(&conn, 1_400, "Quan", "firefox");
+        search(&conn, 2_000, "quantization", "firefox");
+        // A whole query that others extend later, or from another client.
+        search(&conn, 50_000, "hnsw", "firefox");
+        search(&conn, 70_000, "hnsw index", "firefox");
+        search(&conn, 80_000, "hnsw", "chrome");
+        search(&conn, 81_000, "hnsw index", "safari");
+        // The same query twice is no partial query.
+        search(&conn, 90_000, "filters", "chrome");
+        search(&conn, 90_500, "filters", "chrome");
+
+        let mut top: Vec<_> = top_queries(&conn, 0, None, 50)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.query, t.count))
+            .collect();
+        top.sort();
+        assert_eq!(
+            top,
+            [
+                ("filters".into(), 2),
+                ("hnsw".into(), 2),
+                ("hnsw index".into(), 2),
+                ("quantization".into(), 1),
+            ]
+        );
+    }
 }

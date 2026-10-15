@@ -96,6 +96,12 @@ results, without Qdrant or network access.
 latencies, and the most frequent queries. Selecting a request runs it again
 and shows what the service returns for it now. Responses aren't stored.
 
+The search box searches as you type, so the most frequent queries leave out
+partial ones: a search is left out when a longer search starting with it
+follows within 10 seconds from the same user agent. The log has no IPs, so
+the user agent stands in for the client. The request list and the counts
+still include partial queries.
+
 Requests are logged to SQLite, `data/requests.sqlite` in the working
 directory, which is `/service/data` in the container. `deploy.yml` mounts the
 `qdrant-site-search-data` volume there so the log survives deploys. Records

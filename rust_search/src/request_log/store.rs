@@ -9,7 +9,7 @@ const QUEUE_SIZE: usize = 10_000;
 /// How often the writer deletes records past the retention period.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 
-const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY,
     ts INTEGER NOT NULL,
