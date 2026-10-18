@@ -11,6 +11,17 @@
 
 ## Tests
 
+The section-indexer regression tests run without a Qdrant server or model downloads:
+
+```
+python -m unittest discover -s tests -v
+```
+
+The indexer loads the embedding model and generates a sample vector before deleting
+the existing sections collection. A failure during this preflight leaves the existing
+index intact. Failures after deletion, such as crawling or upload errors, can still
+leave an incomplete index.
+
 With a local Qdrant instance running
 
 ```
