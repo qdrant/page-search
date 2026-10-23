@@ -537,10 +537,72 @@ async fn instructions_with_unpartitioned_sections() {
 
 #[tokio::test]
 async fn get_page_reports_missing_page() {
-    let h = Harness::new(true).await;
-    let result = h.call("get_page", json!({"page": "search/nope"})).await;
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let result = h.call("get_page", json!({"page": "nope/nothing"})).await;
     assert!(is_error(&result));
-    assert!(text(&result).contains("No page at /documentation/search/nope/"));
+    let text = text(&result);
+    assert!(
+        text.contains("No page at /documentation/nope/nothing/"),
+        "{text}"
+    );
+    assert!(text.contains("Use search_docs or list_docs"), "{text}");
+}
+
+#[tokio::test]
+async fn missing_page_suggests_its_closest_ancestor() {
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let text = h
+        .text("get_page", json!({"page": "search/nope/deeper"}))
+        .await;
+    let base = h.base();
+    assert!(
+        text.contains(&format!("- Search: {base}/documentation/search/")),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn missing_page_suggests_similar_paths_then_search_results() {
+    let h = Harness::new(true).await;
+    let result = h.call("get_page", json!({"page": "concepts/filter"})).await;
+    assert!(is_error(&result));
+    let text = text(&result);
+    let base = h.base();
+    let filtering = format!("- Filtering: {base}/documentation/search/filtering/");
+    let hybrid = format!("- Hybrid Queries: {base}/documentation/search/hybrid-queries/");
+    assert!(
+        text.starts_with("No page at /documentation/concepts/filter/."),
+        "{text}"
+    );
+    let at = |line: &str| {
+        text.find(line)
+            .unwrap_or_else(|| panic!("{line} in {text}"))
+    };
+    // Path matches before search results, each page once.
+    assert!(at(&filtering) < at(&hybrid), "{text}");
+    assert_eq!(
+        text.matches("/documentation/search/filtering/").count(),
+        1,
+        "{text}"
+    );
+    assert!(!text.contains("/blog/"), "{text}");
+    assert_eq!(
+        h.search.requests.lock().unwrap().as_slice(),
+        [("documentation".to_string(), vec![])]
+    );
+}
+
+#[tokio::test]
+async fn missing_page_suggestions_rank_by_words_in_common() {
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let text = h
+        .text("get_page", json!({"page": "/blog/new-posts/"}))
+        .await;
+    let base = h.base();
+    let new_post = text.find(&format!("- New Post: {base}/blog/new-post/"));
+    let old_post = text.find(&format!("- Old Post: {base}/blog/old-post/"));
+    assert!(new_post.is_some() && new_post < old_post, "{text}");
+    assert!(!text.contains("Hybrid"), "{text}");
 }
 
 #[tokio::test]

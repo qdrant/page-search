@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use super::config::{Config, SOURCES};
+use crate::similar_paths::similar_paths;
 
 pub const DOCS_PREFIX: &str = "/documentation/";
 /// Sources listed newest first rather than in sidebar order.
@@ -29,6 +30,20 @@ static LLMS_ENTRY: LazyLock<Regex> = LazyLock::new(|| {
 });
 static INDEX_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/index\.(md|html)$").unwrap());
 static REPEATED_SLASHES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/{2,}").unwrap());
+
+/// Why a page couldn't be read.
+#[derive(Debug)]
+pub enum PageError {
+    /// Nothing is published at this path.
+    NotFound(String),
+    Other(String),
+}
+
+impl From<String> for PageError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
 
 /// One entry of the page index.
 #[derive(Clone, Debug, Deserialize)]
@@ -201,6 +216,19 @@ fn unlisted_section(manifest: &Manifest, path: &str) -> DocPage {
     page
 }
 
+/// Readable pages similar to `path`, best first.
+pub fn similar_pages(manifest: &Manifest, path: &str, limit: usize) -> Vec<DocPage> {
+    let readable = manifest
+        .pages
+        .values()
+        .filter(|page| page.rendered && page.external_url.is_none())
+        .map(|page| page.path.as_str());
+    similar_paths(path, readable, limit)
+        .into_iter()
+        .filter_map(|path| manifest.pages.get(path).cloned())
+        .collect()
+}
+
 pub struct SiteClient {
     config: Config,
     http: reqwest::Client,
@@ -337,26 +365,27 @@ impl SiteClient {
     pub async fn get_page(
         &self,
         reference: &str,
-    ) -> Result<(Option<DocPage>, String, String), String> {
+    ) -> Result<(Option<DocPage>, String, String), PageError> {
         let path = self.normalize(reference)?;
         let manifest = self.manifest().await?;
         let path = manifest.resolve(&path).to_string();
         let page = manifest.pages.get(&path).cloned();
         if let Some(page) = &page {
             if !page.rendered {
-                return Err(format!(
+                return Err(PageError::Other(format!(
                     "{path} is a section without a page of its own. \
                      Call list_docs with section '{path}' to see its pages."
-                ));
+                )));
             }
             if let Some(external) = &page.external_url {
-                return Err(format!(
+                return Err(PageError::Other(format!(
                     "{} is hosted outside qdrant.tech: {external}",
                     page.title
-                ));
+                )));
             }
         }
-        let fetch_error = |e: reqwest::Error| format!("Could not fetch the page: {e}");
+        let fetch_error =
+            |e: reqwest::Error| PageError::Other(format!("Could not fetch the page: {e}"));
         let response = self
             .http
             .get(self.url(&format!("{path}index.md")))
@@ -364,9 +393,7 @@ impl SiteClient {
             .await
             .map_err(fetch_error)?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(format!(
-                "No page at {path}. Use search_docs or list_docs to find the right one."
-            ));
+            return Err(PageError::NotFound(path));
         }
         let body = response
             .error_for_status()

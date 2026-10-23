@@ -18,8 +18,11 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, Ser
 use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::site::{check_enabled, normalize_path, source_of, DocPage, SiteClient};
+use super::site::{
+    check_enabled, normalize_path, similar_pages, source_of, DocPage, PageError, SiteClient,
+};
 use crate::embedding::QueryEncoder;
+use crate::similar_paths::path_words;
 use crate::snippets::Snippet;
 use crate::{search, snippets};
 
@@ -138,6 +141,9 @@ fn respond<T: Serialize>(
         ),
     })
 }
+
+/// Most pages suggested for a missing page.
+const MAX_SUGGESTIONS: usize = 5;
 
 /// Matches kept per page: enough to show why it matched, without repeating
 /// every heading of a long page.
@@ -511,6 +517,8 @@ impl DocsServer {
     }
 
     /// Read one page in full, as Markdown, including its code examples.
+    ///
+    /// For a missing page, the error suggests existing ones.
     #[tool(annotations(
         read_only_hint = true,
         destructive_hint = false,
@@ -518,7 +526,11 @@ impl DocsServer {
         open_world_hint = true
     ))]
     async fn get_page(&self, Parameters(args): Parameters<GetPageArgs>) -> Result<String, String> {
-        let (entry, url, body) = self.site.get_page(&args.page).await?;
+        let (entry, url, body) = match self.site.get_page(&args.page).await {
+            Ok(page) => page,
+            Err(PageError::NotFound(path)) => return Err(self.not_found(&path).await),
+            Err(PageError::Other(message)) => return Err(message),
+        };
         let mut header = vec![format!("Source: {url}")];
         if let Some(entry) = entry {
             header.insert(0, format!("Title: {}", entry.title));
@@ -834,6 +846,63 @@ struct RawHit {
 }
 
 impl DocsServer {
+    /// Error for a missing page: similar pages, then search results for the
+    /// words of the path.
+    async fn not_found(&self, path: &str) -> String {
+        let mut suggestions: Vec<(String, String)> = Vec::new();
+        let mut suggest = |title: String, url: String| {
+            if suggestions.len() < MAX_SUGGESTIONS && !suggestions.iter().any(|(_, u)| *u == url) {
+                suggestions.push((title, url));
+            }
+        };
+        match self.site.manifest().await {
+            Ok(manifest) => {
+                for page in similar_pages(&manifest, path, MAX_SUGGESTIONS) {
+                    suggest(page.title, self.site.url(&page.path));
+                }
+            }
+            Err(e) => log::warn!("No suggestions from the page index: {e}"),
+        }
+        let source = Source::ALL
+            .into_iter()
+            .find(|s| s.as_str() == source_of(path));
+        let query = path_words(path).join(" ");
+        if let Some(source) = source.filter(|_| !query.is_empty()) {
+            match self
+                .search_source(&query, source, None, MAX_SUGGESTIONS as u64 * 3)
+                .await
+            {
+                Ok(hits) => {
+                    for (hit, _) in hits {
+                        suggest(hit.title, hit.url);
+                    }
+                }
+                Err(e) => log::warn!("No suggestions from search: {e}"),
+            }
+        }
+
+        if suggestions.is_empty() {
+            return format!(
+                "No page at {path}. Use search_docs or list_docs to find the right one."
+            );
+        }
+        let rows: Vec<String> = suggestions
+            .into_iter()
+            .map(|(title, url)| {
+                if title.is_empty() {
+                    format!("- {url}")
+                } else {
+                    format!("- {title}: {url}")
+                }
+            })
+            .collect();
+        format!(
+            "No page at {path}. These existing pages may be the one you meant:\n\n{}\n\n\
+             Read one with get_page, or use search_docs or list_docs to find others.",
+            rows.join("\n")
+        )
+    }
+
     async fn search_source(
         &self,
         query: &str,
