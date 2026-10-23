@@ -19,6 +19,8 @@ const SECTION_COLLECTION_NAME: &str = "sections";
 const MAX_SUGGESTIONS: usize = 5;
 /// Above the number of pages, so the facet returns all of them.
 const MAX_PAGES: u64 = 100_000;
+/// Search hits scoring below this are unrelated to the path.
+const MIN_SUGGESTION_SCORE: f32 = 0.4;
 
 fn sections_exact_limit() -> u64 {
     std::env::var("SECTIONS_EXACT_LIMIT")
@@ -260,7 +262,12 @@ async fn pages_about(
         return Ok(vec![]);
     }
     let mut pages: Vec<String> = Vec::new();
-    for section in parse_sections(query_by_document(client, encoder, &query, vec![]).await?) {
+    let points = query_by_document(client, encoder, &query, vec![])
+        .await?
+        .into_iter()
+        .filter(|point| point.score >= MIN_SUGGESTION_SCORE)
+        .collect();
+    for section in parse_sections(points) {
         if !pages.contains(&section.page) {
             pages.push(section.page);
         }
@@ -313,15 +320,15 @@ async fn suggest_pages(
     Suggestions::Pages(suggestions)
 }
 
-/// Markdown body of a `/md` 404.
-fn not_found_markdown(request_path: &str, base_url: &str, suggestions: &Suggestions) -> String {
+/// Markdown body of a `/md` 404. `request` is the path and query.
+fn not_found_markdown(request: &str, base_url: &str, suggestions: &Suggestions) -> String {
     match suggestions {
         Suggestions::WholePage(page) => format!(
-            "Section not found: {request_path}\n\n\
+            "Section not found: {request}\n\n\
              The page exists. Read all its sections: {base_url}/md/{page}\n"
         ),
         Suggestions::Pages(pages) if pages.is_empty() => {
-            format!("Page or section not found: {request_path}\n")
+            format!("Page or section not found: {request}\n")
         }
         Suggestions::Pages(pages) => {
             let links: Vec<String> = pages
@@ -329,7 +336,7 @@ fn not_found_markdown(request_path: &str, base_url: &str, suggestions: &Suggesti
                 .map(|page| format!("- {base_url}/md/{page}"))
                 .collect();
             format!(
-                "Page or section not found: {request_path}\n\n\
+                "Page or section not found: {request}\n\n\
                  These existing pages may be the one you meant:\n\n{}\n",
                 links.join("\n")
             )
@@ -387,7 +394,13 @@ pub async fn md_handler(
             let suggestions = suggest_pages(qdrant, &encoder, &path_str, query.s.as_deref()).await;
             HttpResponse::NotFound()
                 .content_type("text/markdown; charset=utf-8")
-                .body(not_found_markdown(request_path, &base_url, &suggestions))
+                .body(not_found_markdown(
+                    req.uri()
+                        .path_and_query()
+                        .map_or(request_path, |pq| pq.as_str()),
+                    &base_url,
+                    &suggestions,
+                ))
         }
         Err(e) => {
             log::error!("Section search error: {}", e);
@@ -428,8 +441,17 @@ mod tests {
     #[test]
     fn missing_section_points_to_the_whole_page() {
         let suggestions = Suggestions::WholePage("documentation/search/filtering".to_string());
-        let markdown = not_found_markdown("/md/documentation/search/filtering", BASE, &suggestions);
-        assert!(markdown.starts_with("Section not found"), "{markdown}");
+        let markdown = not_found_markdown(
+            "/md/documentation/search/filtering?s=old-heading",
+            BASE,
+            &suggestions,
+        );
+        assert!(
+            markdown.starts_with(
+                "Section not found: /md/documentation/search/filtering?s=old-heading\n"
+            ),
+            "{markdown}"
+        );
         assert!(
             markdown.contains("https://search.qdrant.tech/md/documentation/search/filtering\n"),
             "{markdown}"
