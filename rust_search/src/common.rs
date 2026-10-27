@@ -3,6 +3,8 @@
 
 pub const COLLECTION_NAME: &str = "site";
 pub const PREFIX_COLLECTION_NAME: &str = "prefix-cache";
+/// A point per page, for suggesting pages in place of missing ones.
+pub const PAGE_COLLECTION_NAME: &str = "pages";
 
 pub fn get_qdrant_url() -> String {
     match std::env::var("QDRANT_URL") {

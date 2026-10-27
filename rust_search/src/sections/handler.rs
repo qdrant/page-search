@@ -4,21 +4,19 @@ use std::collections::BTreeSet;
 
 use qdrant_client::qdrant::r#match::MatchValue;
 use qdrant_client::qdrant::{
-    facet_value, value::Kind, Condition, FacetCountsBuilder, Filter, PayloadIncludeSelector,
-    PointId, QueryPointsBuilder, ScoredPoint, ScrollPointsBuilder,
+    value::Kind, Condition, Filter, PayloadIncludeSelector, PointId, QueryPointsBuilder,
+    ScoredPoint, ScrollPointsBuilder,
 };
 use qdrant_client::Qdrant;
 use serde::Deserialize;
 
 use super::models::{Section, SectionSearchResult, slugify_heading};
 use crate::embedding::QueryEncoder;
-use crate::similar_paths::{path_words, similar_paths};
+use crate::similar_paths::{path_words, suggest, PageIndex};
 
 const SECTION_COLLECTION_NAME: &str = "sections";
 /// Most pages suggested for a missing path.
 const MAX_SUGGESTIONS: usize = 5;
-/// Above the number of pages, so the facet returns all of them.
-const MAX_PAGES: u64 = 100_000;
 /// Search hits scoring below this are unrelated to the path.
 const MIN_SUGGESTION_SCORE: f32 = 0.4;
 
@@ -236,21 +234,6 @@ pub async fn search_sections(
     }
 }
 
-/// Every page in the sections collection.
-async fn all_pages(client: &Qdrant) -> anyhow::Result<Vec<String>> {
-    let response = client
-        .facet(FacetCountsBuilder::new(SECTION_COLLECTION_NAME, "page").limit(MAX_PAGES))
-        .await?;
-    Ok(response
-        .hits
-        .into_iter()
-        .filter_map(|hit| match hit.value?.variant? {
-            facet_value::Variant::StringValue(page) => Some(page),
-            _ => None,
-        })
-        .collect())
-}
-
 /// Pages with sections about the words of `path`, best first.
 async fn pages_about(
     client: &Qdrant,
@@ -295,21 +278,25 @@ async fn suggest_pages(
         .strip_suffix("/index.md")
         .or_else(|| path.strip_suffix(".md"))
         .unwrap_or(path);
-    let pages = all_pages(client).await.unwrap_or_else(|e| {
-        log::warn!("No suggestions from the page list: {e}");
-        vec![]
-    });
-    if pages.iter().any(|page| page == path) {
+    let exists = client
+        .existing(&[path.to_string()])
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("Could not look up {path}: {e}");
+            vec![]
+        });
+    if !exists.is_empty() {
         return match section {
             Some(_) => Suggestions::WholePage(path.to_string()),
             None => Suggestions::Pages(vec![path.to_string()]),
         };
     }
-    let mut suggestions: Vec<String> =
-        similar_paths(path, pages.iter().map(String::as_str), MAX_SUGGESTIONS)
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+    let mut suggestions = suggest(client, path, &[], MAX_SUGGESTIONS)
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("No suggestions from the page index: {e}");
+            vec![]
+        });
     match pages_about(client, encoder, path).await {
         Ok(found) => suggestions.extend(found),
         Err(e) => log::warn!("No suggestions from search: {e}"),

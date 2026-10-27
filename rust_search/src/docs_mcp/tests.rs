@@ -15,6 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{DocsServer, SearchBackend, Source};
 use crate::docs_mcp::config::{Config, SOURCES};
+use crate::similar_paths::MemoryIndex;
 use crate::snippets::Snippet;
 
 /// Canned search results per source, recording the source and partitions of
@@ -25,6 +26,8 @@ pub struct FixedSearch {
     pub requests: Mutex<Vec<(String, Vec<String>)>>,
     snippets: Vec<Value>,
     pub snippet_requests: Mutex<Vec<Option<String>>>,
+    /// The pages of the fake site, for suggestions.
+    pub pages: MemoryIndex,
 }
 
 impl FixedSearch {
@@ -224,6 +227,16 @@ impl Harness {
             sources: sources.iter().map(|s| s.to_string()).collect(),
             ..Config::default()
         };
+        let mut search = search;
+        search.pages = MemoryIndex(
+            manifest()["pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|page| page["rendered"] != false)
+                .map(|page| page["path"].as_str().unwrap().trim_matches('/').to_string())
+                .collect(),
+        );
         let search = Arc::new(search);
         let server = DocsServer::new(config, SearchBackend::Fixed(search.clone()));
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);

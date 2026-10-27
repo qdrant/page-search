@@ -18,11 +18,9 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, Ser
 use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::site::{
-    check_enabled, normalize_path, similar_pages, source_of, DocPage, PageError, SiteClient,
-};
+use super::site::{check_enabled, normalize_path, source_of, DocPage, PageError, SiteClient};
 use crate::embedding::QueryEncoder;
-use crate::similar_paths::path_words;
+use crate::similar_paths::{path_words, suggest};
 use crate::snippets::Snippet;
 use crate::{search, snippets};
 
@@ -850,15 +848,33 @@ impl DocsServer {
     /// words of the path.
     async fn not_found(&self, path: &str) -> String {
         let mut suggestions: Vec<(String, String)> = Vec::new();
-        let mut suggest = |title: String, url: String| {
+        let mut add = |title: String, url: String| {
             if suggestions.len() < MAX_SUGGESTIONS && !suggestions.iter().any(|(_, u)| *u == url) {
                 suggestions.push((title, url));
             }
         };
-        match self.site.manifest().await {
-            Ok(manifest) => {
-                for page in similar_pages(&manifest, path, MAX_SUGGESTIONS) {
-                    suggest(page.title, self.site.url(&page.path));
+        let page = path.trim_matches('/');
+        let similar = match &self.search {
+            SearchBackend::Qdrant { client, .. } => {
+                suggest(client.as_ref(), page, self.site.sources(), MAX_SUGGESTIONS).await
+            }
+            #[cfg(test)]
+            SearchBackend::Fixed(fixed) => {
+                suggest(&fixed.pages, page, self.site.sources(), MAX_SUGGESTIONS).await
+            }
+        };
+        // Titles are a nicety: suggestions still work if the page index doesn't load.
+        let manifest = self.site.manifest().await.ok();
+        match similar {
+            Ok(pages) => {
+                for page in pages {
+                    let page = format!("/{page}/");
+                    let entry = manifest.as_ref().and_then(|m| m.pages.get(&page));
+                    if entry.is_some_and(|e| !e.rendered || e.external_url.is_some()) {
+                        continue;
+                    }
+                    let title = entry.map(|e| e.title.clone()).unwrap_or_default();
+                    add(title, self.site.url(&page));
                 }
             }
             Err(e) => log::warn!("No suggestions from the page index: {e}"),
@@ -874,7 +890,7 @@ impl DocsServer {
             {
                 Ok(hits) => {
                     for (hit, _) in hits {
-                        suggest(hit.title, hit.url);
+                        add(hit.title, hit.url);
                     }
                 }
                 Err(e) => log::warn!("No suggestions from search: {e}"),

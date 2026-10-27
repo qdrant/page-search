@@ -46,7 +46,7 @@ It has four read-only tools:
 |---|---|
 | `search_docs(query, sources?, partition?, limit?, format?)` | Searches the `site` collection the same way as `/api/search`, one query per source, and returns one result per page with the headings and passages that matched |
 | `search_snippets(query, language?, limit?, format?)` | Searches the `snippet-search` collection the same way as `/snippets/search`, with the language optional, and returns code examples with their descriptions and pages |
-| `get_page(page)` | Returns a page's Markdown from `<page>/index.md` on the site, resolving old URLs through the page index. Also reads the full snippet pages under `/documentation/snippets/` |
+| `get_page(page)` | Returns a page's Markdown from `<page>/index.md` on the site, resolving old URLs through the page index. Also reads the full snippet pages under `/documentation/snippets/`. For a missing page, suggests existing ones |
 | `list_docs(section?, offset?, limit?, format?)` | Browses the page index: docs and courses in sidebar order, articles and blog posts newest first |
 
 Tools answer in Markdown by default. `format: "json"` returns the same result
@@ -54,7 +54,26 @@ as JSON, in both the text and the structured content. `get_page` returns
 Markdown only. New tools should offer both formats where a JSON form makes sense.
 
 Pages and the page index (`/docs-manifest.json`, built by the landing_page
-repository) are fetched from the site, not from Qdrant. Only the two search tools use Qdrant.
+repository) are fetched from the site, not from Qdrant. Only the two search tools
+and the suggestions for missing pages use Qdrant.
+
+## Suggestions for missing pages
+
+When `/md` or `get_page` finds no page, it suggests existing ones from the
+`pages` collection, which `site_search/sections.py` fills next to `sections`:
+a point per page, with a sparse vector of the letter trigrams of its slug and
+Qdrant's IDF modifier. Qdrant finds slugs sharing pieces of the missing slug,
+misspelled ones included, with rare pieces counting more, and
+`src/similar_paths.rs` ranks the best hits by whole words, source, and section.
+When a parent of the missing path exists, such as `documentation/data-management`
+for `documentation/data-management/something`, pages below it are searched
+separately and ranked higher, so similar slugs elsewhere can't crowd them out.
+The closest existing parent page and its main page follow. `/md` then adds
+pages of matching sections, and `get_page` results from `search_docs`.
+
+The trigram vectors are built in two places, `site_search/page_paths.py` for
+the index and `slug_trigrams` in `src/similar_paths.rs` for queries, so the two
+must change together.
 
 Settings, from the environment, in addition to the service's own:
 
@@ -77,7 +96,7 @@ applies to `/api/search` and `/md` as well as `/mcp`.
 
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 -v page-search-qdrant:/qdrant/storage qdrant/qdrant
-# Index the `site` and `sections` collections with the Python tools in ../site_search
+# Index the `site`, `sections`, and `pages` collections with the Python tools in ../site_search
 
 QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
   cargo run --release --features local-embeddings --bin service

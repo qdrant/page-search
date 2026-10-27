@@ -15,7 +15,6 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use super::config::{Config, SOURCES};
-use crate::similar_paths::similar_paths;
 
 pub const DOCS_PREFIX: &str = "/documentation/";
 /// Sources listed newest first rather than in sidebar order.
@@ -214,19 +213,6 @@ fn unlisted_section(manifest: &Manifest, path: &str) -> DocPage {
         page.partition = first.partition.clone();
     }
     page
-}
-
-/// Readable pages similar to `path`, best first.
-pub fn similar_pages(manifest: &Manifest, path: &str, limit: usize) -> Vec<DocPage> {
-    let readable = manifest
-        .pages
-        .values()
-        .filter(|page| page.rendered && page.external_url.is_none())
-        .map(|page| page.path.as_str());
-    similar_paths(path, readable, limit)
-        .into_iter()
-        .filter_map(|path| manifest.pages.get(path).cloned())
-        .collect()
 }
 
 pub struct SiteClient {
