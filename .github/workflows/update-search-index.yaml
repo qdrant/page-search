@@ -36,6 +36,13 @@ jobs:
     - name: crawl and index sections
       run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} qdrant/page-search python -m site_search.sections
+    # Suggestions for missing pages search the pages that have sections.
+    - name: index pages
+      working-directory: rust_search
+      env:
+        QDRANT_HOST: ${{ secrets.QDRANT_HOST }}
+        QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+      run: cargo run --release --bin index_pages
 
   index-skills:
     # The type of runner that the job will run on

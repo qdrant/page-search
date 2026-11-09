@@ -11,10 +11,10 @@ use qdrant_client::Qdrant;
 use serde::Deserialize;
 
 use super::models::{Section, SectionSearchResult, slugify_heading};
+use crate::common::SECTION_COLLECTION_NAME;
 use crate::embedding::QueryEncoder;
 use crate::similar_paths::{path_words, suggest, PageIndex};
 
-const SECTION_COLLECTION_NAME: &str = "sections";
 /// Most pages suggested for a missing path.
 const MAX_SUGGESTIONS: usize = 5;
 /// Search hits scoring below this are unrelated to the path.

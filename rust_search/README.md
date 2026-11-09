@@ -60,9 +60,8 @@ and the suggestions for missing pages use Qdrant.
 ## Suggestions for missing pages
 
 When `/md` or `get_page` finds no page, it suggests existing ones from the
-`pages` collection, which `site_search/sections.py` fills next to `sections`:
-a point per page, with a sparse vector of the letter trigrams of its slug and
-Qdrant's IDF modifier. Qdrant finds slugs sharing pieces of the missing slug,
+`pages` collection: a point per page, with a sparse vector of the letter
+trigrams of its slug and Qdrant's IDF modifier. Qdrant finds slugs sharing pieces of the missing slug,
 misspelled ones included, with rare pieces counting more, and
 `src/similar_paths.rs` ranks the best hits by whole words, source, and section.
 When a parent of the missing path exists, such as `documentation/data-management`
@@ -71,9 +70,14 @@ separately and ranked higher, so similar slugs elsewhere can't crowd them out.
 The closest existing parent page and its main page follow. `/md` then adds
 pages of matching sections, and `get_page` results from `search_docs`.
 
-The trigram vectors are built in two places, `site_search/page_paths.py` for
-the index and `slug_trigrams` in `src/similar_paths.rs` for queries, so the two
-must change together.
+The `index_pages` binary builds `pages` from the pages of the `sections`
+collection, so run it after `site_search.sections`, as the update workflow
+does. It encodes pages with the same code as the queries, `page_point` and
+`slug_trigrams` in `src/similar_paths.rs`.
+
+```bash
+QDRANT_URL=http://localhost:6334 cargo run --release --bin index_pages
+```
 
 Settings, from the environment, in addition to the service's own:
 
@@ -96,7 +100,8 @@ applies to `/api/search` and `/md` as well as `/mcp`.
 
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 -v page-search-qdrant:/qdrant/storage qdrant/qdrant
-# Index the `site`, `sections`, and `pages` collections with the Python tools in ../site_search
+# Index the `site` and `sections` collections with the Python tools in ../site_search
+QDRANT_URL=http://localhost:6334 cargo run --release --bin index_pages
 
 QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
   cargo run --release --features local-embeddings --bin service

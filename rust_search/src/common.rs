@@ -3,6 +3,7 @@
 
 pub const COLLECTION_NAME: &str = "site";
 pub const PREFIX_COLLECTION_NAME: &str = "prefix-cache";
+pub const SECTION_COLLECTION_NAME: &str = "sections";
 /// A point per page, for suggesting pages in place of missing ones.
 pub const PAGE_COLLECTION_NAME: &str = "pages";
 

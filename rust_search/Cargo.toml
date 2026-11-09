@@ -17,6 +17,10 @@ path = "src/index_prefix.rs"
 name = "setup_collection"
 path = "src/setup_collection.rs"
 
+[[bin]]
+name = "index_pages"
+path = "src/index_pages.rs"
+
 [dependencies]
 actix-web = "4.9"
 actix-cors = "0.6.4"

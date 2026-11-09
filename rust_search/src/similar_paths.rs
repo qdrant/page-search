@@ -3,17 +3,19 @@
 //! The `pages` collection has a point per page with a sparse vector of the
 //! letter trigrams of its slug, so Qdrant finds slugs that share pieces of
 //! words, misspelled ones included, and its IDF weighting makes rare pieces
-//! count more. The best hits are then ranked here by whole words.
+//! count more. The best hits are then ranked here by whole words. The
+//! `index_pages` binary builds the collection with `page_point`, so pages
+//! and queries are encoded by the same code.
 
 use std::collections::BTreeMap;
 use std::future::Future;
 
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::{
-    Condition, Filter, PayloadIncludeSelector, Query, QueryPointsBuilder, ScrollPointsBuilder,
-    Value, VectorInput,
+    Condition, Filter, NamedVectors, PayloadIncludeSelector, PointStruct, Query,
+    QueryPointsBuilder, ScrollPointsBuilder, Value, Vector, VectorInput,
 };
-use qdrant_client::Qdrant;
+use qdrant_client::{Payload, Qdrant};
 
 use crate::common::PAGE_COLLECTION_NAME;
 
@@ -70,8 +72,6 @@ fn trigram_letter(c: char) -> u32 {
 /// padded as `^word$`, split into overlapping trigrams. A trigram's index is
 /// its letters in base 39, where a-z are 1-26, 0-9 are 27-36, `^` is 37, `$`
 /// is 38, and anything else is 0. Its value is how often it occurs.
-///
-/// `site_search/page_paths.py` builds the same vectors for the index.
 pub fn slug_trigrams(path: &str) -> (Vec<u32>, Vec<f32>) {
     let mut counts: BTreeMap<u32, f32> = BTreeMap::new();
     for word in slug_words(path) {
@@ -83,6 +83,32 @@ pub fn slug_trigrams(path: &str) -> (Vec<u32>, Vec<f32>) {
         }
     }
     counts.into_iter().unzip()
+}
+
+/// The paths above `page`: `["docs", "docs/search"]` for `docs/search/filtering`.
+fn page_ancestors(page: &str) -> Vec<String> {
+    let segments: Vec<&str> = page.trim_matches('/').split('/').collect();
+    (1..segments.len())
+        .map(|n| segments[..n].join("/"))
+        .collect()
+}
+
+/// The point of `page` in the `pages` collection: its slug vector, and the
+/// fields that suggestions filter on.
+pub fn page_point(id: u64, page: &str) -> PointStruct {
+    let page = page.trim_matches('/');
+    let (indices, values) = slug_trigrams(page);
+    let payload = Payload::try_from(serde_json::json!({
+        "page": page,
+        "source": source(page),
+        "ancestors": page_ancestors(page),
+    }))
+    .expect("the payload is a JSON object");
+    PointStruct::new(
+        id,
+        NamedVectors::default().add_vector(SLUG_VECTOR, Vector::new_sparse(indices, values)),
+        payload,
+    )
 }
 
 /// Endings of other forms of a word.
@@ -430,7 +456,6 @@ mod tests {
         assert_eq!(path_words("blog/qdrant-1.15.x"), ["qdrant", "1", "15", "x"]);
     }
 
-    /// The same vectors as `site_search/page_paths.py` builds.
     #[test]
     fn encodes_slugs_as_trigrams() {
         assert_eq!(
@@ -440,6 +465,20 @@ mod tests {
         assert_eq!(
             slug_trigrams("/blog/Aa_aa/"),
             (vec![1598, 56317], vec![2.0, 2.0])
+        );
+    }
+
+    #[test]
+    fn builds_points_with_ancestors() {
+        let point = page_point(7, "/documentation/data-management/airbyte/");
+        let payload = Payload::from(point.payload);
+        assert_eq!(
+            serde_json::Value::from(payload),
+            serde_json::json!({
+                "page": "documentation/data-management/airbyte",
+                "source": "documentation",
+                "ancestors": ["documentation", "documentation/data-management"],
+            })
         );
     }
 

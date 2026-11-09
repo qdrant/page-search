@@ -15,10 +15,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
     Distance,
     Document,
-    Modifier,
     PointStruct,
-    SparseVector,
-    SparseVectorParams,
     TextIndexParams,
     TextIndexType,
     TokenizerType,
@@ -31,13 +28,11 @@ from usp.tree import sitemap_tree_for_homepage
 
 from site_search.config import (
     NEURAL_ENCODER,
-    PAGE_COLLECTION_NAME,
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
     SECTION_COLLECTION_NAME,
 )
-from site_search.page_paths import SLUG_VECTOR, slug_trigrams
 
 
 def slugify_heading(title: str) -> str:
@@ -172,37 +167,6 @@ def _parse_markdown(url: str) -> _ParsingResult:
     return _ParsingResult(sections=sections, url=url)
 
 
-def page_point(page: str) -> PointStruct:
-    """A point of the pages collection, which finds pages by their slugs."""
-    indices, values = slug_trigrams(page)
-    # The paths above the page, to search within a section.
-    ancestors = list(accumulate(page.split("/")[:-1], lambda a, b: a + "/" + b))
-    return PointStruct(
-        id=str(uuid.uuid5(uuid.NAMESPACE_URL, page)),
-        payload={"page": page, "source": page.split("/")[0], "ancestors": ancestors},
-        vector={SLUG_VECTOR: SparseVector(indices=indices, values=values)},
-    )
-
-
-def create_page_collection(qdrant_client: QdrantClient):
-    if qdrant_client.collection_exists(PAGE_COLLECTION_NAME):
-        qdrant_client.delete_collection(PAGE_COLLECTION_NAME)
-
-    # IDF makes trigrams that are on few pages count more.
-    qdrant_client.create_collection(
-        collection_name=PAGE_COLLECTION_NAME,
-        vectors_config={},
-        sparse_vectors_config={SLUG_VECTOR: SparseVectorParams(modifier=Modifier.IDF)},
-    )
-    for field_name in ["page", "source", "ancestors"]:
-        qdrant_client.create_payload_index(
-            collection_name=PAGE_COLLECTION_NAME,
-            field_name=field_name,
-            field_schema=PayloadSchemaType.KEYWORD,
-            wait=True,
-        )
-
-
 def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
     if not sitemap_url:
         tree = sitemap_tree_for_homepage(url)
@@ -294,8 +258,6 @@ def main():
         wait=True,
     )
 
-    create_page_collection(qdrant_client)
-
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
@@ -314,9 +276,6 @@ def main():
                 points=[
                     section.as_point(NEURAL_ENCODER) for section in result.sections
                 ],
-            )
-            qdrant_client.upsert(
-                PAGE_COLLECTION_NAME, points=[page_point(result.sections[0].page)]
             )
 
 
