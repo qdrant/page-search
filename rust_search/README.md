@@ -60,23 +60,33 @@ and the suggestions for missing pages use Qdrant.
 ## Suggestions for missing pages
 
 When `/md` or `get_page` finds no page, it suggests existing ones from the
-`pages` collection: a point per page, with a sparse vector of the letter
-trigrams of its slug and Qdrant's IDF modifier. Qdrant finds slugs sharing pieces of the missing slug,
-misspelled ones included, with rare pieces counting more, and
-`src/similar_paths.rs` ranks the best hits by whole words, source, and section.
-When a parent of the missing path exists, such as `documentation/data-management`
-for `documentation/data-management/something`, pages below it are searched
-separately and ranked higher, so similar slugs elsewhere can't crowd them out.
-The closest existing parent page and its main page follow. `/md` then adds
-pages of matching sections, and `get_page` results from `search_docs`.
+`pages` collection. Each page has three vectors, and Qdrant ranks them in one
+query (`similar_query` in `src/similar_paths.rs`):
 
-The `index_pages` binary builds `pages` from the pages of the `sections`
-collection, so run it after `site_search.sections`, as the update workflow
-does. It encodes pages with the same code as the queries, `page_point` and
-`slug_trigrams` in `src/similar_paths.rs`.
+| Vector | Built from | Finds |
+|---|---|---|
+| `slug` | letter bigrams and trigrams of the slug, unit length (cosine) | misspellings |
+| `words` | `qdrant/bm25` of the slug words and title, embedded by Qdrant, IDF | other forms of the same words, without stopwords |
+| `meaning` | the title, slug words, and headings, embedded with the query model | rephrased paths |
+
+Each vector is searched with a minimum score, so a path that resembles nothing
+gets no suggestions. The hits are fused with RRF, and a formula raises pages in
+the same source and below the same parents as the missing path. The closest
+existing parent page and its main page follow, checked in the same request.
+
+When the page exists but the `?s=` section doesn't, `/md` lists the page's
+sections in order, using `order_by` on the integer index of `line` in
+`sections`, and links the whole page.
+
+The `index_pages` binary builds `pages` from the pages, titles, and headings of
+the `sections` collection, so run it after `site_search.sections`, as the update
+workflow does. It encodes pages with the same code as the queries, `page_point`
+in `src/similar_paths.rs`, and embeds `meaning` like queries, as
+`QUERY_EMBEDDING` says: Qdrant Cloud embeds it on upsert by default.
 
 ```bash
-QDRANT_URL=http://localhost:6334 cargo run --release --bin index_pages
+QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
+  cargo run --release --features local-embeddings --bin index_pages
 ```
 
 Settings, from the environment, in addition to the service's own:
@@ -101,7 +111,8 @@ applies to `/api/search` and `/md` as well as `/mcp`.
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 -v page-search-qdrant:/qdrant/storage qdrant/qdrant
 # Index the `site` and `sections` collections with the Python tools in ../site_search
-QDRANT_URL=http://localhost:6334 cargo run --release --bin index_pages
+QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
+  cargo run --release --features local-embeddings --bin index_pages
 
 QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
   cargo run --release --features local-embeddings --bin service

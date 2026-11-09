@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::config::Config;
 use super::site::{check_enabled, normalize_path, source_of, DocPage, PageError, SiteClient};
 use crate::embedding::QueryEncoder;
-use crate::similar_paths::{path_words, suggest};
+use crate::similar_paths::suggest;
 use crate::snippets::Snippet;
 use crate::{search, snippets};
 
@@ -844,57 +844,49 @@ struct RawHit {
 }
 
 impl DocsServer {
-    /// Error for a missing page: similar pages, then search results for the
-    /// words of the path.
+    /// Error for a missing page: existing pages that resemble it.
     async fn not_found(&self, path: &str) -> String {
-        let mut suggestions: Vec<(String, String)> = Vec::new();
-        let mut add = |title: String, url: String| {
-            if suggestions.len() < MAX_SUGGESTIONS && !suggestions.iter().any(|(_, u)| *u == url) {
-                suggestions.push((title, url));
-            }
-        };
         let page = path.trim_matches('/');
         let similar = match &self.search {
-            SearchBackend::Qdrant { client, .. } => {
-                suggest(client.as_ref(), page, self.site.sources(), MAX_SUGGESTIONS).await
+            SearchBackend::Qdrant { client, encoder } => {
+                suggest(
+                    client.as_ref(),
+                    Some(encoder),
+                    page,
+                    self.site.sources(),
+                    MAX_SUGGESTIONS,
+                )
+                .await
             }
             #[cfg(test)]
             SearchBackend::Fixed(fixed) => {
-                suggest(&fixed.pages, page, self.site.sources(), MAX_SUGGESTIONS).await
+                suggest(
+                    &fixed.pages,
+                    None,
+                    page,
+                    self.site.sources(),
+                    MAX_SUGGESTIONS,
+                )
+                .await
             }
         };
-        // Titles are a nicety: suggestions still work if the page index doesn't load.
+        // The page index hides pages that aren't readable here; it's a
+        // nicety, so suggestions still work if it doesn't load.
         let manifest = self.site.manifest().await.ok();
+        let mut suggestions: Vec<(String, String)> = Vec::new();
         match similar {
             Ok(pages) => {
-                for page in pages {
-                    let page = format!("/{page}/");
+                for suggestion in pages {
+                    let page = format!("/{}/", suggestion.page);
                     let entry = manifest.as_ref().and_then(|m| m.pages.get(&page));
                     if entry.is_some_and(|e| !e.rendered || e.external_url.is_some()) {
                         continue;
                     }
-                    let title = entry.map(|e| e.title.clone()).unwrap_or_default();
-                    add(title, self.site.url(&page));
+                    let title = entry.map_or(suggestion.title, |e| e.title.clone());
+                    suggestions.push((title, self.site.url(&page)));
                 }
             }
             Err(e) => log::warn!("No suggestions from the page index: {e}"),
-        }
-        let source = Source::ALL
-            .into_iter()
-            .find(|s| s.as_str() == source_of(path));
-        let query = path_words(path).join(" ");
-        if let Some(source) = source.filter(|_| !query.is_empty()) {
-            match self
-                .search_source(&query, source, None, MAX_SUGGESTIONS as u64 * 3)
-                .await
-            {
-                Ok(hits) => {
-                    for (hit, _) in hits {
-                        add(hit.title, hit.url);
-                    }
-                }
-                Err(e) => log::warn!("No suggestions from search: {e}"),
-            }
         }
 
         if suggestions.is_empty() {

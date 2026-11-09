@@ -13,12 +13,12 @@ use serde::Deserialize;
 use super::models::{Section, SectionSearchResult, slugify_heading};
 use crate::common::SECTION_COLLECTION_NAME;
 use crate::embedding::QueryEncoder;
-use crate::similar_paths::{path_words, suggest, PageIndex};
+use crate::similar_paths::{suggest, Suggestion};
 
 /// Most pages suggested for a missing path.
 const MAX_SUGGESTIONS: usize = 5;
-/// Search hits scoring below this are unrelated to the path.
-const MIN_SUGGESTION_SCORE: f32 = 0.4;
+/// Most sections listed for a missing section.
+const MAX_LISTED_SECTIONS: u32 = 500;
 
 fn sections_exact_limit() -> u64 {
     std::env::var("SECTIONS_EXACT_LIMIT")
@@ -234,36 +234,63 @@ pub async fn search_sections(
     }
 }
 
-/// Pages with sections about the words of `path`, best first.
-async fn pages_about(
-    client: &Qdrant,
-    encoder: &QueryEncoder,
-    path: &str,
-) -> anyhow::Result<Vec<String>> {
-    let query = path_words(path).join(" ");
-    if query.is_empty() {
-        return Ok(vec![]);
-    }
-    let mut pages: Vec<String> = Vec::new();
-    let points = query_by_document(client, encoder, &query, vec![])
-        .await?
+/// A heading of a page, to link to with `?s=`.
+#[derive(Debug, PartialEq)]
+struct Heading {
+    title: String,
+    slug: String,
+    level: i64,
+}
+
+/// The headings of `page` in the order they appear, as Qdrant orders them by
+/// the `line` index.
+async fn page_headings(client: &Qdrant, page: &str) -> anyhow::Result<Vec<Heading>> {
+    let response = client
+        .scroll(
+            ScrollPointsBuilder::new(SECTION_COLLECTION_NAME)
+                .filter(Filter::must([Condition::matches(
+                    "page",
+                    MatchValue::Keyword(page.to_string()),
+                )]))
+                .order_by("line")
+                .limit(MAX_LISTED_SECTIONS)
+                .with_payload(PayloadIncludeSelector {
+                    fields: ["title", "slug", "level"].map(String::from).to_vec(),
+                })
+                .with_vectors(false),
+        )
+        .await?;
+    Ok(response
+        .result
         .into_iter()
-        .filter(|point| point.score >= MIN_SUGGESTION_SCORE)
-        .collect();
-    for section in parse_sections(points) {
-        if !pages.contains(&section.page) {
-            pages.push(section.page);
-        }
-    }
-    Ok(pages)
+        .filter_map(|point| {
+            let text = |key: &str| match point.payload.get(key)?.kind.as_ref()? {
+                Kind::StringValue(value) if !value.is_empty() => Some(value.clone()),
+                _ => None,
+            };
+            let level = match point.payload.get("level")?.kind.as_ref()? {
+                Kind::IntegerValue(level) => *level,
+                Kind::DoubleValue(level) => *level as i64,
+                _ => return None,
+            };
+            Some(Heading {
+                title: text("title")?,
+                slug: text("slug")?,
+                level,
+            })
+        })
+        .collect())
 }
 
 /// Existing pages to suggest for a missing page or section.
 enum Suggestions {
-    /// The page exists, the section doesn't.
-    WholePage(String),
-    /// Similar pages, then pages about the words of the path.
-    Pages(Vec<String>),
+    /// The page exists, the section doesn't: the page's headings.
+    WholePage {
+        page: String,
+        headings: Vec<Heading>,
+    },
+    /// Pages that resemble the missing one.
+    Pages(Vec<Suggestion>),
 }
 
 async fn suggest_pages(
@@ -278,49 +305,62 @@ async fn suggest_pages(
         .strip_suffix("/index.md")
         .or_else(|| path.strip_suffix(".md"))
         .unwrap_or(path);
-    let exists = client
-        .existing(&[path.to_string()])
-        .await
-        .unwrap_or_else(|e| {
-            log::warn!("Could not look up {path}: {e}");
-            vec![]
-        });
-    if !exists.is_empty() {
-        return match section {
-            Some(_) => Suggestions::WholePage(path.to_string()),
-            None => Suggestions::Pages(vec![path.to_string()]),
-        };
+    // Without a section, the page would have been found if it had sections.
+    if section.is_some() {
+        match page_headings(client, path).await {
+            Ok(headings) if !headings.is_empty() => {
+                return Suggestions::WholePage {
+                    page: path.to_string(),
+                    headings,
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("Could not list the sections of {path}: {e}"),
+        }
     }
-    let mut suggestions = suggest(client, path, &[], MAX_SUGGESTIONS)
-        .await
-        .unwrap_or_else(|e| {
-            log::warn!("No suggestions from the page index: {e}");
-            vec![]
-        });
-    match pages_about(client, encoder, path).await {
-        Ok(found) => suggestions.extend(found),
-        Err(e) => log::warn!("No suggestions from search: {e}"),
-    }
-    let mut seen = BTreeSet::new();
-    suggestions.retain(|page| seen.insert(page.clone()));
-    suggestions.truncate(MAX_SUGGESTIONS);
-    Suggestions::Pages(suggestions)
+    Suggestions::Pages(
+        suggest(client, Some(encoder), path, &[], MAX_SUGGESTIONS)
+            .await
+            .unwrap_or_else(|e| {
+                log::warn!("No suggestions from the page index: {e}");
+                vec![]
+            }),
+    )
 }
 
 /// Markdown body of a `/md` 404. `request` is the path and query.
 fn not_found_markdown(request: &str, base_url: &str, suggestions: &Suggestions) -> String {
     match suggestions {
-        Suggestions::WholePage(page) => format!(
-            "Section not found: {request}\n\n\
-             The page exists. Read all its sections: {base_url}/md/{page}\n"
-        ),
+        Suggestions::WholePage { page, headings } => {
+            let top = headings.iter().map(|h| h.level).min().unwrap_or(1);
+            let rows: Vec<String> = headings
+                .iter()
+                .map(|h| {
+                    format!(
+                        "{}- [{}]({base_url}/md/{page}?s={})",
+                        "  ".repeat((h.level - top) as usize),
+                        h.title,
+                        h.slug
+                    )
+                })
+                .collect();
+            format!(
+                "Section not found: {request}\n\n\
+                 The page has these sections:\n\n{}\n\n\
+                 Read the whole page: {base_url}/md/{page}\n",
+                rows.join("\n")
+            )
+        }
         Suggestions::Pages(pages) if pages.is_empty() => {
             format!("Page or section not found: {request}\n")
         }
         Suggestions::Pages(pages) => {
             let links: Vec<String> = pages
                 .iter()
-                .map(|page| format!("- {base_url}/md/{page}"))
+                .map(|s| match s.title.as_str() {
+                    "" => format!("- {base_url}/md/{}", s.page),
+                    title => format!("- [{title}]({base_url}/md/{})", s.page),
+                })
                 .collect();
             format!(
                 "Page or section not found: {request}\n\n\
@@ -402,18 +442,25 @@ mod tests {
 
     const BASE: &str = "https://search.qdrant.tech";
 
+    fn suggestion(page: &str, title: &str) -> Suggestion {
+        Suggestion {
+            page: page.to_string(),
+            title: title.to_string(),
+        }
+    }
+
     #[test]
     fn not_found_lists_suggested_pages() {
         let suggestions = Suggestions::Pages(vec![
-            "documentation/search/filtering".to_string(),
-            "documentation/guides/filtering-tips".to_string(),
+            suggestion("documentation/search/filtering", "Filtering"),
+            suggestion("documentation/guides", ""),
         ]);
         assert_eq!(
             not_found_markdown("/md/documentation/concepts/filter", BASE, &suggestions),
             "Page or section not found: /md/documentation/concepts/filter\n\n\
              These existing pages may be the one you meant:\n\n\
-             - https://search.qdrant.tech/md/documentation/search/filtering\n\
-             - https://search.qdrant.tech/md/documentation/guides/filtering-tips\n"
+             - [Filtering](https://search.qdrant.tech/md/documentation/search/filtering)\n\
+             - https://search.qdrant.tech/md/documentation/guides\n"
         );
     }
 
@@ -426,22 +473,34 @@ mod tests {
     }
 
     #[test]
-    fn missing_section_points_to_the_whole_page() {
-        let suggestions = Suggestions::WholePage("documentation/search/filtering".to_string());
-        let markdown = not_found_markdown(
-            "/md/documentation/search/filtering?s=old-heading",
-            BASE,
-            &suggestions,
-        );
-        assert!(
-            markdown.starts_with(
-                "Section not found: /md/documentation/search/filtering?s=old-heading\n"
+    fn missing_section_lists_the_sections_of_the_page() {
+        let heading = |title: &str, slug: &str, level| Heading {
+            title: title.to_string(),
+            slug: slug.to_string(),
+            level,
+        };
+        let suggestions = Suggestions::WholePage {
+            page: "documentation/search/filtering".to_string(),
+            headings: vec![
+                heading("Filtering", "filtering", 1),
+                heading("Filtering Clauses", "filtering-clauses", 2),
+                heading("Must", "must", 3),
+                heading("Filtering Conditions", "filtering-conditions", 2),
+            ],
+        };
+        assert_eq!(
+            not_found_markdown(
+                "/md/documentation/search/filtering?s=old-heading",
+                BASE,
+                &suggestions,
             ),
-            "{markdown}"
-        );
-        assert!(
-            markdown.contains("https://search.qdrant.tech/md/documentation/search/filtering\n"),
-            "{markdown}"
+            "Section not found: /md/documentation/search/filtering?s=old-heading\n\n\
+             The page has these sections:\n\n\
+             - [Filtering](https://search.qdrant.tech/md/documentation/search/filtering?s=filtering)\n\
+             \x20\x20- [Filtering Clauses](https://search.qdrant.tech/md/documentation/search/filtering?s=filtering-clauses)\n\
+             \x20\x20\x20\x20- [Must](https://search.qdrant.tech/md/documentation/search/filtering?s=must)\n\
+             \x20\x20- [Filtering Conditions](https://search.qdrant.tech/md/documentation/search/filtering?s=filtering-conditions)\n\n\
+             Read the whole page: https://search.qdrant.tech/md/documentation/search/filtering\n"
         );
     }
 }

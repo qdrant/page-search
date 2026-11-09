@@ -1,10 +1,22 @@
-//! Find existing pages whose paths resemble a missing one.
+//! Find existing pages that resemble a missing one.
 //!
-//! The `pages` collection has a point per page with a sparse vector of the
-//! letter trigrams of its slug, so Qdrant finds slugs that share pieces of
-//! words, misspelled ones included, and its IDF weighting makes rare pieces
-//! count more. The best hits are then ranked here by whole words. The
-//! `index_pages` binary builds the collection with `page_point`, so pages
+//! The `pages` collection has a point per page with three vectors, and Qdrant
+//! does the ranking in one query:
+//!
+//! - `slug`: the letter bigrams and trigrams of the slug, scaled to unit
+//!   length, so the dot product is their cosine similarity. It finds
+//!   misspellings such as `fitlering` and `serach`.
+//! - `words`: `qdrant/bm25` of the slug words and the title, embedded by
+//!   Qdrant itself, with the IDF modifier. Qdrant's English stemmer and
+//!   stopwords make `indexes` find `indexing`, and leave out words like `and`.
+//! - `meaning`: the page's title, slug words, and headings embedded with
+//!   [`NEURAL_ENCODER`], so rephrased paths find pages by meaning.
+//!
+//! Each vector is searched with a minimum score, the hits are fused with RRF,
+//! and a formula raises pages in the same source and below the same
+//! ancestors as the missing path. A path that resembles nothing gets nothing.
+//!
+//! The `index_pages` binary builds the collection with [`page_point`], so pages
 //! and queries are encoded by the same code.
 
 use std::collections::BTreeMap;
@@ -12,17 +24,39 @@ use std::future::Future;
 
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::{
-    Condition, Filter, NamedVectors, PayloadIncludeSelector, PointStruct, Query,
-    QueryPointsBuilder, ScrollPointsBuilder, Value, Vector, VectorInput,
+    Condition, Document, Expression, Filter, FormulaBuilder, MultExpression, NamedVectors,
+    PayloadIncludeSelector, PointStruct, PrefetchQueryBuilder, Query, QueryBatchPointsBuilder,
+    QueryPoints, QueryPointsBuilder, RrfBuilder, ScoredPoint, SumExpression, Vector, VectorInput,
 };
 use qdrant_client::{Payload, Qdrant};
 
 use crate::common::PAGE_COLLECTION_NAME;
+use crate::embedding::QueryEncoder;
+#[cfg(doc)]
+use crate::embedding::NEURAL_ENCODER;
 
-/// The sparse vector of a page's slug in the `pages` collection.
+/// Letter n-grams of the slug, for misspellings.
 pub const SLUG_VECTOR: &str = "slug";
-/// Hits from Qdrant to rank for a missing path.
+/// BM25 of the slug words and title, for the same words in other forms.
+pub const WORDS_VECTOR: &str = "words";
+/// Dense embedding of the title, slug words, and headings, for rephrasings.
+pub const MEANING_VECTOR: &str = "meaning";
+/// Qdrant's built-in BM25 model: tokenizes, stems, and drops English stopwords.
+pub const BM25_MODEL: &str = "qdrant/bm25";
+
+/// Hits taken from each vector before fusion.
 const CANDIDATES: u64 = 50;
+/// Slugs less similar than this share only pieces of words.
+const MIN_SLUG_SIMILARITY: f32 = 0.45;
+/// Pages less similar in meaning than this are unrelated.
+const MIN_MEANING_SIMILARITY: f32 = 0.45;
+/// RRF's k: higher values flatten the difference between ranks.
+const RRF_K: u32 = 10;
+/// Added for sharing the deepest ancestor of the missing path, less for
+/// shallower ones.
+const ANCESTOR_BOOST: f32 = 0.2;
+/// Added for being in the same source as the missing path.
+const SOURCE_BOOST: f32 = 0.1;
 
 /// The words of a path below its source, such as `["search", "hybrid", "queries"]`
 /// for `/documentation/search/hybrid-queries/`.
@@ -51,14 +85,7 @@ fn source(path: &str) -> &str {
     path.trim_matches('/').split('/').next().unwrap_or_default()
 }
 
-/// The parent of a path: `docs/search` for `/docs/search/filtering/`.
-fn parent(path: &str) -> &str {
-    path.trim_matches('/')
-        .rsplit_once('/')
-        .map_or("", |(parent, _)| parent)
-}
-
-fn trigram_letter(c: char) -> u32 {
+fn letter(c: char) -> u32 {
     match c {
         'a'..='z' => c as u32 - 'a' as u32 + 1,
         '0'..='9' => c as u32 - '0' as u32 + 27,
@@ -68,21 +95,30 @@ fn trigram_letter(c: char) -> u32 {
     }
 }
 
+/// Bigram indices start after the trigram ones.
+const BIGRAM_OFFSET: u32 = 39 * 39 * 39;
+
 /// The sparse vector of a slug: each word of the last segment of `path`,
-/// padded as `^word$`, split into overlapping trigrams. A trigram's index is
-/// its letters in base 39, where a-z are 1-26, 0-9 are 27-36, `^` is 37, `$`
-/// is 38, and anything else is 0. Its value is how often it occurs.
-pub fn slug_trigrams(path: &str) -> (Vec<u32>, Vec<f32>) {
+/// padded as `^word$`, split into overlapping trigrams and bigrams. An
+/// n-gram's index is its letters in base 39, where a-z are 1-26, 0-9 are
+/// 27-36, `^` is 37, `$` is 38, and anything else is 0; bigrams are offset by
+/// 39³. Values count occurrences, scaled so the vector has unit length.
+pub fn slug_ngrams(path: &str) -> (Vec<u32>, Vec<f32>) {
     let mut counts: BTreeMap<u32, f32> = BTreeMap::new();
     for word in slug_words(path) {
-        let letters: Vec<u32> = format!("^{word}$").chars().map(trigram_letter).collect();
-        for trigram in letters.windows(3) {
-            *counts
-                .entry(trigram[0] * 39 * 39 + trigram[1] * 39 + trigram[2])
-                .or_default() += 1.0;
+        let letters: Vec<u32> = format!("^{word}$").chars().map(letter).collect();
+        for t in letters.windows(3) {
+            *counts.entry(t[0] * 39 * 39 + t[1] * 39 + t[2]).or_default() += 1.0;
+        }
+        for b in letters.windows(2) {
+            *counts.entry(BIGRAM_OFFSET + b[0] * 39 + b[1]).or_default() += 1.0;
         }
     }
-    counts.into_iter().unzip()
+    let norm = counts.values().map(|v| v * v).sum::<f32>().sqrt();
+    counts
+        .into_iter()
+        .map(|(index, count)| (index, count / norm))
+        .unzip()
 }
 
 /// The paths above `page`: `["docs", "docs/search"]` for `docs/search/filtering`.
@@ -93,86 +129,219 @@ fn page_ancestors(page: &str) -> Vec<String> {
         .collect()
 }
 
-/// The point of `page` in the `pages` collection: its slug vector, and the
-/// fields that suggestions filter on.
-pub fn page_point(id: u64, page: &str) -> PointStruct {
-    let page = page.trim_matches('/');
-    let (indices, values) = slug_trigrams(page);
+/// A page as `index_pages` reads it from the `sections` collection.
+pub struct PageText {
+    pub page: String,
+    pub title: String,
+    pub headings: Vec<String>,
+}
+
+impl PageText {
+    /// What `words` is built from: the slug words and the title.
+    pub fn words(&self) -> String {
+        format!("{} {}", slug_words(&self.page).join(" "), self.title)
+    }
+
+    /// What `meaning` is built from: the title, slug words, and headings.
+    pub fn meaning(&self) -> String {
+        format!(
+            "{}. {}. {}",
+            self.title,
+            slug_words(&self.page).join(" "),
+            self.headings.join(", ")
+        )
+    }
+}
+
+/// The point of a page in the `pages` collection. `meaning` is the embedding
+/// of [`PageText::meaning`]; Qdrant computes `words` itself.
+pub fn page_point(id: u64, page: &PageText, meaning: Vector) -> PointStruct {
+    let path = page.page.trim_matches('/');
+    let (indices, values) = slug_ngrams(path);
     let payload = Payload::try_from(serde_json::json!({
-        "page": page,
-        "source": source(page),
-        "ancestors": page_ancestors(page),
+        "page": path,
+        "title": page.title,
+        "source": source(path),
+        "ancestors": page_ancestors(path),
     }))
     .expect("the payload is a JSON object");
     PointStruct::new(
         id,
-        NamedVectors::default().add_vector(SLUG_VECTOR, Vector::new_sparse(indices, values)),
+        NamedVectors::default()
+            .add_vector(SLUG_VECTOR, Vector::new_sparse(indices, values))
+            .add_vector(WORDS_VECTOR, Document::new(page.words(), BM25_MODEL))
+            .add_vector(MEANING_VECTOR, meaning),
         payload,
     )
 }
 
-/// Endings of other forms of a word.
-const ENDINGS: [&str; 4] = ["s", "es", "ing", "ed"];
-
-/// Equal words or forms of one word, such as "query" and "queries".
-fn same_word(a: &str, b: &str) -> bool {
-    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    match long.strip_prefix(short) {
-        Some(ending) => ending.is_empty() || ENDINGS.contains(&ending),
-        None => {
-            short
-                .strip_suffix('y')
-                .and_then(|stem| long.strip_prefix(stem))
-                == Some("ies")
+/// The query for pages resembling `path`, ranked by Qdrant. Without
+/// `meaning`, the dense vector isn't searched.
+pub fn similar_query(
+    path: &str,
+    sources: &[String],
+    meaning: Option<VectorInput>,
+    limit: usize,
+) -> QueryPoints {
+    let path = path.trim_matches('/');
+    let filter = (!sources.is_empty())
+        .then(|| Filter::must([Condition::matches("source", sources.to_vec())]));
+    let candidates = |query: Query, using: &str| {
+        let mut prefetch = PrefetchQueryBuilder::default()
+            .query(query)
+            .using(using)
+            .limit(CANDIDATES);
+        if let Some(filter) = &filter {
+            prefetch = prefetch.filter(filter.clone());
         }
-    }
-}
-
-/// Edits between `a` and `b`, counting a swap of neighboring letters as one.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut d: Vec<Vec<usize>> = (0..=a.len())
-        .map(|i| {
-            (0..=b.len())
-                .map(|j| {
-                    if i == 0 {
-                        j
-                    } else if j == 0 {
-                        i
-                    } else {
-                        0
-                    }
-                })
-                .collect()
-        })
-        .collect();
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let substitution = d[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = substitution.min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[a.len()][b.len()]
-}
-
-/// One word misspelled as the other: one edit in words of 5 to 8 letters, two
-/// in longer ones.
-fn misspelled(a: &str, b: &str) -> bool {
-    let (a_len, b_len) = (a.chars().count(), b.chars().count());
-    let allowed = match a_len.min(b_len) {
-        0..=4 => return false,
-        5..=8 => 1,
-        _ => 2,
+        prefetch
     };
-    a_len.abs_diff(b_len) <= allowed && edit_distance(a, b) <= allowed
+
+    let (indices, values) = slug_ngrams(path);
+    let mut prefetch = vec![
+        candidates(
+            Query::new_nearest(VectorInput::new_sparse(indices, values)),
+            SLUG_VECTOR,
+        )
+        .score_threshold(MIN_SLUG_SIMILARITY)
+        .build(),
+        candidates(
+            Query::new_nearest(Document::new(slug_words(path).join(" "), BM25_MODEL)),
+            WORDS_VECTOR,
+        )
+        .build(),
+    ];
+    if let Some(meaning) = meaning {
+        prefetch.push(
+            candidates(Query::new_nearest(meaning), MEANING_VECTOR)
+                .score_threshold(MIN_MEANING_SIMILARITY)
+                .build(),
+        );
+    }
+    let fused = PrefetchQueryBuilder::default()
+        .prefetch(prefetch)
+        .query(Query::new_rrf(RrfBuilder::with_k(RRF_K)))
+        .limit(CANDIDATES);
+
+    // Raise pages that share the source and the ancestors of the missing
+    // path, the deepest ancestor most.
+    let shared = page_ancestors(path).split_off(1);
+    let mut sum = vec![Expression::score()];
+    for (depth, ancestor) in shared.iter().enumerate() {
+        let weight = ANCESTOR_BOOST * (depth + 1) as f32 / shared.len() as f32;
+        sum.push(boost(
+            weight,
+            Condition::matches("ancestors", ancestor.clone()),
+        ));
+    }
+    sum.push(boost(
+        SOURCE_BOOST,
+        Condition::matches("source", source(path).to_string()),
+    ));
+
+    QueryPointsBuilder::new(PAGE_COLLECTION_NAME)
+        .add_prefetch(fused)
+        .query(Query::new_formula(FormulaBuilder::new(SumExpression {
+            sum,
+        })))
+        .limit(limit as u64)
+        .with_payload(page_selector())
+        .build()
 }
 
-fn words_match(a: &str, b: &str) -> bool {
-    same_word(a, b) || misspelled(a, b)
+fn boost(weight: f32, condition: Condition) -> Expression {
+    MultExpression {
+        mult: vec![
+            Expression::constant(weight),
+            Expression::condition(condition),
+        ],
+    }
+    .into()
+}
+
+/// The query for those of `pages` that exist.
+fn existing_query(pages: &[String]) -> QueryPoints {
+    QueryPointsBuilder::new(PAGE_COLLECTION_NAME)
+        .filter(Filter::must([Condition::matches("page", pages.to_vec())]))
+        .limit(pages.len().max(1) as u64)
+        .with_payload(page_selector())
+        .build()
+}
+
+/// A page suggested in place of a missing one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggestion {
+    /// Written like `documentation/search/filtering`.
+    pub page: String,
+    /// Empty if unknown.
+    pub title: String,
+}
+
+/// Where pages are looked up.
+pub trait PageIndex {
+    /// Pages resembling `path`, best first, and those of `pages` that exist,
+    /// in one request.
+    fn lookup(
+        &self,
+        path: &str,
+        sources: &[String],
+        meaning: Option<VectorInput>,
+        limit: usize,
+        pages: &[String],
+    ) -> impl Future<Output = anyhow::Result<(Vec<Suggestion>, Vec<String>)>> + Send;
+}
+
+fn payload_str(point: &ScoredPoint, key: &str) -> Option<String> {
+    match point.payload.get(key)?.kind.as_ref()? {
+        Kind::StringValue(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn page_selector() -> PayloadIncludeSelector {
+    PayloadIncludeSelector {
+        fields: vec!["page".to_string(), "title".to_string()],
+    }
+}
+
+impl PageIndex for Qdrant {
+    async fn lookup(
+        &self,
+        path: &str,
+        sources: &[String],
+        meaning: Option<VectorInput>,
+        limit: usize,
+        pages: &[String],
+    ) -> anyhow::Result<(Vec<Suggestion>, Vec<String>)> {
+        let mut queries = vec![similar_query(path, sources, meaning, limit)];
+        if !pages.is_empty() {
+            queries.push(existing_query(pages));
+        }
+        let mut results = self
+            .query_batch(QueryBatchPointsBuilder::new(PAGE_COLLECTION_NAME, queries))
+            .await?
+            .result
+            .into_iter()
+            .map(|batch| batch.result);
+        let similar = results
+            .next()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|point| {
+                Some(Suggestion {
+                    page: payload_str(point, "page")?,
+                    title: payload_str(point, "title").unwrap_or_default(),
+                })
+            })
+            .collect();
+        let existing = results
+            .next()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|point| payload_str(point, "page"))
+            .collect();
+        Ok((similar, existing))
+    }
 }
 
 /// Ancestors of `path` below its source, closest first: `/docs/a/b/`,
@@ -197,161 +366,16 @@ fn main_page(section: &str) -> String {
     }
 }
 
-/// Whether `page` is below `section`: `docs/search/filtering` is below `docs/search`.
-fn is_under(page: &str, section: &str) -> bool {
-    page.trim_matches('/')
-        .strip_prefix(section.trim_matches('/'))
-        .is_some_and(|rest| rest.starts_with('/'))
-}
-
-/// Where pages are looked up, written like `documentation/search/filtering`.
-pub trait PageIndex {
-    /// Pages whose slug shares trigrams with the slug of `path`, with their
-    /// scores, best first. Empty `sources` means all of them, and `within`
-    /// keeps only pages under that path.
-    fn search(
-        &self,
-        path: &str,
-        sources: &[String],
-        within: Option<&str>,
-        limit: u64,
-    ) -> impl Future<Output = anyhow::Result<Vec<(String, f32)>>> + Send;
-
-    /// Those of `pages` that exist.
-    fn existing(
-        &self,
-        pages: &[String],
-    ) -> impl Future<Output = anyhow::Result<Vec<String>>> + Send;
-}
-
-fn page_of(payload: &std::collections::HashMap<String, Value>) -> Option<String> {
-    match payload.get("page")?.kind.as_ref()? {
-        Kind::StringValue(page) => Some(page.clone()),
-        _ => None,
-    }
-}
-
-fn page_selector() -> PayloadIncludeSelector {
-    PayloadIncludeSelector {
-        fields: vec!["page".to_string()],
-    }
-}
-
-impl PageIndex for Qdrant {
-    async fn search(
-        &self,
-        path: &str,
-        sources: &[String],
-        within: Option<&str>,
-        limit: u64,
-    ) -> anyhow::Result<Vec<(String, f32)>> {
-        let (indices, values) = slug_trigrams(path);
-        if indices.is_empty() {
-            return Ok(vec![]);
-        }
-        let mut conditions = vec![];
-        if !sources.is_empty() {
-            conditions.push(Condition::matches("source", sources.to_vec()));
-        }
-        if let Some(within) = within {
-            conditions.push(Condition::matches(
-                "ancestors",
-                within.trim_matches('/').to_string(),
-            ));
-        }
-        let query = QueryPointsBuilder::new(PAGE_COLLECTION_NAME)
-            .query(Query::new_nearest(VectorInput::new_sparse(indices, values)))
-            .using(SLUG_VECTOR)
-            .filter(Filter::must(conditions))
-            .limit(limit)
-            .with_payload(page_selector());
-        Ok(self
-            .query(query)
-            .await?
-            .result
-            .into_iter()
-            .filter_map(|point| Some((page_of(&point.payload)?, point.score)))
-            .collect())
-    }
-
-    async fn existing(&self, pages: &[String]) -> anyhow::Result<Vec<String>> {
-        if pages.is_empty() {
-            return Ok(vec![]);
-        }
-        let response = self
-            .scroll(
-                ScrollPointsBuilder::new(PAGE_COLLECTION_NAME)
-                    .filter(Filter::must([Condition::matches("page", pages.to_vec())]))
-                    .limit(pages.len() as u32)
-                    .with_payload(page_selector())
-                    .with_vectors(false),
-            )
-            .await?;
-        Ok(response
-            .result
-            .iter()
-            .filter_map(|point| page_of(&point.payload))
-            .collect())
-    }
-}
-
-/// Search hits resembling `path`, best first. A hit must share a word, or a
-/// misspelling of one, with the last segment of `path`, since trigrams also
-/// match unrelated words. Same source, same section, words of the parent
-/// path, and being below `prefix`, the closest existing ancestor, raise a hit.
-fn rank(path: &str, hits: &[(String, f32)], prefix: Option<&str>) -> Vec<String> {
-    let top = hits.iter().map(|(_, score)| *score).fold(0.0, f32::max);
-    let missing_slug_words = slug_words(path);
-    let parent_words = path_words(parent(path));
-    let mut ranked: Vec<(f32, &str)> = hits
-        .iter()
-        .filter(|(_, score)| *score > 0.0)
-        .filter_map(|(page, score)| {
-            let page_slug_words = slug_words(page);
-            let shares_a_word = missing_slug_words
-                .iter()
-                .any(|w| page_slug_words.iter().any(|p| words_match(w, p)));
-            if !shares_a_word {
-                return None;
-            }
-            let page_words = path_words(page);
-            let shared_parent_words = parent_words
-                .iter()
-                .filter(|w| page_words.iter().any(|p| words_match(w, p)))
-                .count();
-            let flag = |condition: bool| f32::from(u8::from(condition));
-            let rank = score / top
-                + flag(slug(page) == slug(path))
-                + 0.5 * flag(source(page) == source(path))
-                + 0.25 * flag(parent(page) == parent(path))
-                + 0.25 * shared_parent_words as f32 / parent_words.len().max(1) as f32
-                + 0.5 * flag(prefix.is_some_and(|prefix| is_under(page, prefix)));
-            Some((rank, page.as_str()))
-        })
-        .collect();
-    // Ties go to the slug with fewer words.
-    ranked.sort_by(|(a, x), (b, y)| {
-        b.total_cmp(a)
-            .then_with(|| slug_words(x).len().cmp(&slug_words(y).len()))
-            .then_with(|| x.cmp(y))
-    });
-    let mut pages: Vec<String> = ranked
-        .into_iter()
-        .map(|(_, page)| page.to_string())
-        .collect();
-    pages.dedup();
-    pages
-}
-
-/// Pages to suggest for a missing `path`, best first: pages with a similar
-/// slug, preferring those below the closest existing ancestor, then that
-/// ancestor and its main page.
+/// Pages to suggest for a missing `path`, best first: pages that resemble
+/// it, as ranked by Qdrant, then its closest existing ancestor and that
+/// ancestor's main page. With an `encoder`, pages are also matched by meaning.
 pub async fn suggest(
     index: &impl PageIndex,
+    encoder: Option<&QueryEncoder>,
     path: &str,
     sources: &[String],
     limit: usize,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<Suggestion>> {
     let levels: Vec<[String; 2]> = ancestors(path)
         .into_iter()
         .map(|ancestor| {
@@ -359,34 +383,31 @@ pub async fn suggest(
             [ancestor, main]
         })
         .collect();
-    let existing = index.existing(&levels.concat()).await?;
-    let closest = levels
-        .into_iter()
-        .find(|level| level.iter().any(|page| existing.contains(page)));
-    let prefix = closest.as_ref().map(|[ancestor, _]| ancestor.as_str());
-
-    // Searched separately, so pages below the prefix aren't crowded out of
-    // the hits by similar slugs elsewhere.
-    let within = async {
-        match prefix {
-            Some(prefix) => index.search(path, sources, Some(prefix), CANDIDATES).await,
-            None => Ok(vec![]),
-        }
+    let words = path_words(path).join(" ");
+    let meaning = match encoder {
+        Some(encoder) if !words.is_empty() => match encoder.encode(&words).await {
+            Ok(meaning) => Some(meaning),
+            Err(e) => {
+                log::warn!("Suggesting without meaning: {e}");
+                None
+            }
+        },
+        _ => None,
     };
-    let (mut hits, within) =
-        futures::try_join!(index.search(path, sources, None, CANDIDATES), within)?;
-    for hit in within {
-        if !hits.iter().any(|(page, _)| *page == hit.0) {
-            hits.push(hit);
-        }
-    }
-    let mut similar = rank(path, &hits, prefix);
-    similar.truncate(limit);
+    let (mut similar, existing) = index
+        .lookup(path, sources, meaning, limit, &levels.concat())
+        .await?;
 
-    let closest: Vec<String> = closest
+    let closest: Vec<Suggestion> = levels
+        .into_iter()
+        .find(|level| level.iter().any(|page| existing.contains(page)))
         .into_iter()
         .flatten()
-        .filter(|page| existing.contains(page) && !similar.contains(page))
+        .filter(|page| existing.contains(page) && !similar.iter().any(|s| s.page == *page))
+        .map(|page| Suggestion {
+            page,
+            title: String::new(),
+        })
         .take(limit)
         .collect();
     similar.truncate(limit - closest.len());
@@ -394,49 +415,62 @@ pub async fn suggest(
     Ok(similar)
 }
 
-/// Pages kept in memory, scored by the trigrams they share with the query.
+/// Pages kept in memory, matched by slug similarity only, for tests without
+/// Qdrant.
 #[cfg(test)]
 #[derive(Default)]
 pub struct MemoryIndex(pub Vec<String>);
 
 #[cfg(test)]
 impl PageIndex for MemoryIndex {
-    async fn search(
+    async fn lookup(
         &self,
         path: &str,
         sources: &[String],
-        within: Option<&str>,
-        limit: u64,
-    ) -> anyhow::Result<Vec<(String, f32)>> {
-        let (query, _) = slug_trigrams(path);
-        let mut hits: Vec<(String, f32)> = self
+        _meaning: Option<VectorInput>,
+        limit: usize,
+        pages: &[String],
+    ) -> anyhow::Result<(Vec<Suggestion>, Vec<String>)> {
+        let query: BTreeMap<u32, f32> = {
+            let (indices, values) = slug_ngrams(path);
+            indices.into_iter().zip(values).collect()
+        };
+        let mut hits: Vec<(f32, &String)> = self
             .0
             .iter()
             .filter(|page| sources.is_empty() || sources.iter().any(|s| s == source(page)))
-            .filter(|page| within.is_none_or(|w| is_under(page, w)))
-            .map(|page| {
-                let (trigrams, _) = slug_trigrams(page);
-                let shared = trigrams.iter().filter(|t| query.contains(t)).count();
-                (page.clone(), shared as f32)
+            .filter_map(|page| {
+                let (indices, values) = slug_ngrams(page);
+                let similarity: f32 = indices
+                    .iter()
+                    .zip(values)
+                    .filter_map(|(i, v)| Some(query.get(i)? * v))
+                    .sum();
+                (similarity >= MIN_SLUG_SIMILARITY).then_some((similarity, page))
             })
-            .filter(|(_, score)| *score > 0.0)
             .collect();
-        hits.sort_by(|(_, a), (_, b)| b.total_cmp(a));
-        hits.truncate(limit as usize);
-        Ok(hits)
-    }
-
-    async fn existing(&self, pages: &[String]) -> anyhow::Result<Vec<String>> {
-        Ok(pages
+        hits.sort_by(|(a, x), (b, y)| b.total_cmp(a).then_with(|| x.cmp(y)));
+        let similar = hits
+            .into_iter()
+            .take(limit)
+            .map(|(_, page)| Suggestion {
+                page: page.clone(),
+                title: String::new(),
+            })
+            .collect();
+        let existing = pages
             .iter()
             .filter(|page| self.0.contains(page))
             .cloned()
-            .collect())
+            .collect();
+        Ok((similar, existing))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use qdrant_client::qdrant::{expression, query, Rrf};
+
     use super::*;
 
     fn index(pages: &[&str]) -> MemoryIndex {
@@ -444,7 +478,22 @@ mod tests {
     }
 
     async fn suggestions(pages: &[&str], path: &str, limit: usize) -> Vec<String> {
-        suggest(&index(pages), path, &[], limit).await.unwrap()
+        suggest(&index(pages), None, path, &[], limit)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.page)
+            .collect()
+    }
+
+    fn similarity(a: &str, b: &str) -> f32 {
+        let (ai, av) = slug_ngrams(a);
+        let (bi, bv) = slug_ngrams(b);
+        let b: BTreeMap<u32, f32> = bi.into_iter().zip(bv).collect();
+        ai.iter()
+            .zip(av)
+            .filter_map(|(i, v)| Some(b.get(i)? * v))
+            .sum()
     }
 
     #[test]
@@ -457,25 +506,65 @@ mod tests {
     }
 
     #[test]
-    fn encodes_slugs_as_trigrams() {
-        assert_eq!(
-            slug_trigrams("documentation/hy-1"),
-            (vec![13181, 56614, 57407], vec![1.0, 1.0, 1.0])
+    fn encodes_slugs_as_unit_ngram_vectors() {
+        let (indices, values) = slug_ngrams("documentation/hy-1");
+        // Trigrams ^hy hy$ ^1$, then bigrams ^h hy y$ ^1 1$.
+        assert_eq!(indices[..3], [13181, 56614, 57407]);
+        assert_eq!(indices.len(), 8);
+        assert!(indices[3..].iter().all(|&i| i > BIGRAM_OFFSET));
+        let length: f32 = values.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((length - 1.0).abs() < 1e-6, "{length}");
+    }
+
+    #[test]
+    fn misspelled_slugs_are_similar_and_others_are_not() {
+        for (typo, page) in [
+            ("search/fitlering", "search/filtering"),
+            ("x/serach", "x/search"),
+            ("x/colections", "x/collections"),
+            ("x/quantisation", "x/quantization"),
+            ("x/airbyt", "x/airbyte"),
+        ] {
+            let s = similarity(typo, page);
+            assert!(s >= MIN_SLUG_SIMILARITY, "{typo} {page} {s}");
+        }
+        for (path, page) in [
+            ("x/xyzzy-plugh", "x/why-similarity-is-not-enough"),
+            ("x/backups-and-restore", "x/tutorials-and-examples"),
+            ("x/disaster", "x/discovery"),
+        ] {
+            let s = similarity(path, page);
+            assert!(s < MIN_SLUG_SIMILARITY, "{path} {page} {s}");
+        }
+    }
+
+    #[test]
+    fn fewer_extra_words_are_more_similar() {
+        assert!(
+            similarity("x/filtering", "x/filtering")
+                > similarity("x/filtering", "x/text-filtering")
         );
-        assert_eq!(
-            slug_trigrams("/blog/Aa_aa/"),
-            (vec![1598, 56317], vec![2.0, 2.0])
+        assert!(
+            similarity("x/filtering", "x/text-filtering")
+                > similarity("x/filtering", "x/pre-filtering-vs-post-filtering-tips")
         );
     }
 
     #[test]
-    fn builds_points_with_ancestors() {
-        let point = page_point(7, "/documentation/data-management/airbyte/");
-        let payload = Payload::from(point.payload);
+    fn builds_points_with_ancestors_and_title() {
+        let page = PageText {
+            page: "/documentation/data-management/airbyte/".to_string(),
+            title: "Airbyte".to_string(),
+            headings: vec!["Setup".to_string(), "Usage".to_string()],
+        };
+        assert_eq!(page.words(), "airbyte Airbyte");
+        assert_eq!(page.meaning(), "Airbyte. airbyte. Setup, Usage");
+        let point = page_point(7, &page, Vector::new_dense(vec![0.0; 3]));
         assert_eq!(
-            serde_json::Value::from(payload),
+            serde_json::Value::from(Payload::from(point.payload)),
             serde_json::json!({
                 "page": "documentation/data-management/airbyte",
+                "title": "Airbyte",
                 "source": "documentation",
                 "ancestors": ["documentation", "documentation/data-management"],
             })
@@ -483,26 +572,54 @@ mod tests {
     }
 
     #[test]
-    fn matches_other_forms_of_a_word() {
-        assert!(same_word("query", "queries"));
-        assert!(same_word("filter", "filtering"));
-        assert!(same_word("collection", "collections"));
-        assert!(!same_word("api", "app"));
-        assert!(same_word("index", "indexing"));
-        assert!(!same_word("search", "sparse"));
-        assert!(!same_word("three", "threshold"));
-        assert!(!same_word("point", "pointer"));
+    fn queries_three_vectors_fused_and_boosted_in_qdrant() {
+        let query = similar_query(
+            "documentation/data-management/connectors/airbyt",
+            &["documentation".to_string()],
+            Some(VectorInput::new_dense(vec![0.5; 3])),
+            5,
+        );
+        assert_eq!(query.limit, Some(5));
+        let fused = &query.prefetch[0];
+        assert!(matches!(
+            fused.query.as_ref().and_then(|q| q.variant.as_ref()),
+            Some(query::Variant::Rrf(Rrf { k: Some(RRF_K), .. }))
+        ));
+        let usings: Vec<_> = fused
+            .prefetch
+            .iter()
+            .map(|p| p.using.clone().unwrap())
+            .collect();
+        assert_eq!(usings, [SLUG_VECTOR, WORDS_VECTOR, MEANING_VECTOR]);
+        assert!(fused.prefetch.iter().all(|p| p.filter.is_some()));
+        assert_eq!(fused.prefetch[0].score_threshold, Some(MIN_SLUG_SIMILARITY));
+        assert_eq!(
+            fused.prefetch[2].score_threshold,
+            Some(MIN_MEANING_SIMILARITY)
+        );
+
+        // $score, two ancestors below the source, and the source.
+        let Some(query::Variant::Formula(formula)) =
+            query.query.as_ref().and_then(|q| q.variant.as_ref())
+        else {
+            panic!("{query:?}")
+        };
+        let Some(expression::Variant::Sum(sum)) =
+            formula.expression.as_ref().and_then(|e| e.variant.as_ref())
+        else {
+            panic!("{formula:?}")
+        };
+        assert_eq!(sum.sum.len(), 4);
     }
 
     #[test]
-    fn matches_misspellings_of_longer_words() {
-        assert!(misspelled("fitlering", "filtering"));
-        assert!(misspelled("colections", "collections"));
-        assert!(misspelled("hybird", "hybrid"));
-        assert!(misspelled("quantisation", "quantization"));
-        assert!(!misspelled("data", "date"));
-        assert!(!misspelled("points", "pints-of-beer"));
-        assert!(!misspelled("search", "sparse"));
+    fn searches_meaning_only_with_an_encoder() {
+        let query = similar_query("documentation/x", &[], None, 5);
+        assert_eq!(query.prefetch[0].prefetch.len(), 2);
+        assert!(query.prefetch[0]
+            .prefetch
+            .iter()
+            .all(|p| p.filter.is_none()));
     }
 
     #[test]
@@ -513,34 +630,6 @@ mod tests {
         );
         assert_eq!(ancestors("documentation/a/b"), ["documentation/a"]);
         assert!(ancestors("documentation/a").is_empty());
-    }
-
-    #[tokio::test]
-    async fn ranks_moved_pages_first() {
-        let pages = [
-            "documentation/search/filtering",
-            "documentation/concepts/collections",
-            "documentation/guides/filtering-tips",
-            "documentation/concepts/points",
-        ];
-        assert_eq!(
-            suggestions(&pages, "documentation/concepts/filtering", 5).await,
-            [
-                "documentation/search/filtering",
-                "documentation/guides/filtering-tips"
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn needs_a_word_of_the_last_segment() {
-        let pages = [
-            "documentation/concepts/collections",
-            "documentation/a/nothing",
-        ];
-        assert!(suggestions(&pages, "documentation/b/nope-ing", 5)
-            .await
-            .is_empty());
     }
 
     #[tokio::test]
@@ -563,88 +652,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn higher_scores_rank_first() {
-        // Qdrant scores rare trigrams higher: "quantization" outweighs "vector".
-        let hits = [
-            ("articles/what-is-vector-quantization".to_string(), 10.0),
-            ("documentation/manage-data/vectors".to_string(), 4.0),
-            ("documentation/manage-data/quantization".to_string(), 7.0),
-        ];
-        assert_eq!(
-            rank(
-                "documentation/data-management/vector-quantisation",
-                &hits,
-                None
-            )[0],
-            "documentation/manage-data/quantization"
-        );
-    }
-
-    #[test]
-    fn ranks_pages_in_the_same_section_first() {
-        let hits = [
-            (
-                "documentation/search-patterns/vector-search-filtering".to_string(),
-                5.0,
-            ),
-            ("documentation/search/filtering".to_string(), 5.0),
-        ];
-        assert_eq!(
-            rank("documentation/search/fitlering", &hits, None)[0],
-            "documentation/search/filtering"
-        );
-    }
-
-    #[test]
-    fn checks_pages_below_a_section() {
-        assert!(is_under(
-            "documentation/search/filtering",
-            "documentation/search"
-        ));
-        assert!(is_under(
-            "/documentation/search/a/b/",
-            "/documentation/search/"
-        ));
-        assert!(!is_under(
-            "documentation/search-tuning/x",
-            "documentation/search"
-        ));
-        assert!(!is_under("documentation/search", "documentation/search"));
-    }
-
-    #[test]
-    fn prefers_pages_below_the_prefix() {
-        let hits = [
-            ("documentation/other/airbyte".to_string(), 1.0),
-            (
-                "documentation/data-management/connectors/airbyte".to_string(),
-                0.6,
-            ),
-        ];
-        let path = "documentation/data-management/airbyt";
-        assert_eq!(rank(path, &hits, None)[0], "documentation/other/airbyte");
-        assert_eq!(
-            rank(path, &hits, Some("documentation/data-management"))[0],
-            "documentation/data-management/connectors/airbyte"
-        );
-    }
-
     #[tokio::test]
-    async fn searches_below_the_closest_existing_ancestor() {
+    async fn suggests_nothing_for_unrelated_paths() {
         let pages = [
-            "documentation/data-management",
-            "documentation/data-management/connectors/airbyte-sync",
-            "documentation/other/airbyte",
+            "documentation/concepts/collections",
+            "documentation/a/nothing",
         ];
-        assert_eq!(
-            suggestions(&pages, "documentation/data-management/airbyt", 5).await,
-            [
-                "documentation/data-management/connectors/airbyte-sync",
-                "documentation/other/airbyte",
-                "documentation/data-management"
-            ]
-        );
+        assert!(suggestions(&pages, "documentation/b/xyzzy-plugh", 5)
+            .await
+            .is_empty());
     }
 
     #[tokio::test]
@@ -688,18 +704,6 @@ mod tests {
         assert_eq!(
             suggestions(&pages[1..], "/documentation/search/aaa/", 5).await,
             ["/documentation/search/search/"]
-        );
-    }
-
-    #[tokio::test]
-    async fn searches_only_the_given_sources() {
-        let index = index(&["blog/filtering", "documentation/search/filtering"]);
-        let sources = ["documentation".to_string()];
-        assert_eq!(
-            suggest(&index, "blog/filtering-tips", &sources, 5)
-                .await
-                .unwrap(),
-            ["documentation/search/filtering"]
         );
     }
 }
