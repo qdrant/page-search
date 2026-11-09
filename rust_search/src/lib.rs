@@ -9,5 +9,6 @@ pub mod embedding;
 pub mod request_log;
 pub mod search;
 pub mod sections;
+pub mod similar_paths;
 pub mod skills;
 pub mod snippets;

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use itertools::Itertools;
 use qdrant_client::qdrant::{
-    vectors_config::Config, OptimizersConfigDiff, PointId, PointStruct, VectorParams, Vectors,
-    VectorsConfig,
+    vectors_config::Config, Memory, OptimizersConfigDiff, PointId, PointStruct, VectorParams,
+    Vectors, VectorsConfig,
 };
 use qdrant_client::qdrant::{CreateCollection, Distance, Document, UpsertPointsBuilder, Value};
 use qdrant_client::Qdrant;
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
                     config: Some(Config::Params(VectorParams {
                         size: 384,
                         distance: Distance::Cosine as i32,
-                        on_disk: Some(true),
+                        memory: Some(Memory::Cold as i32),
                         ..Default::default()
                     })),
                 }),

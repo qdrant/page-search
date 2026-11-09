@@ -18,8 +18,9 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, Ser
 use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::site::{check_enabled, normalize_path, source_of, DocPage, SiteClient};
+use super::site::{check_enabled, normalize_path, source_of, DocPage, PageError, SiteClient};
 use crate::embedding::QueryEncoder;
+use crate::similar_paths::suggest;
 use crate::snippets::Snippet;
 use crate::{search, snippets};
 
@@ -138,6 +139,9 @@ fn respond<T: Serialize>(
         ),
     })
 }
+
+/// Most pages suggested for a missing page.
+const MAX_SUGGESTIONS: usize = 5;
 
 /// Matches kept per page: enough to show why it matched, without repeating
 /// every heading of a long page.
@@ -511,6 +515,8 @@ impl DocsServer {
     }
 
     /// Read one page in full, as Markdown, including its code examples.
+    ///
+    /// For a missing page, the error suggests existing ones.
     #[tool(annotations(
         read_only_hint = true,
         destructive_hint = false,
@@ -518,7 +524,11 @@ impl DocsServer {
         open_world_hint = true
     ))]
     async fn get_page(&self, Parameters(args): Parameters<GetPageArgs>) -> Result<String, String> {
-        let (entry, url, body) = self.site.get_page(&args.page).await?;
+        let (entry, url, body) = match self.site.get_page(&args.page).await {
+            Ok(page) => page,
+            Err(PageError::NotFound(path)) => return Err(self.not_found(&path).await),
+            Err(PageError::Other(message)) => return Err(message),
+        };
         let mut header = vec![format!("Source: {url}")];
         if let Some(entry) = entry {
             header.insert(0, format!("Title: {}", entry.title));
@@ -834,6 +844,73 @@ struct RawHit {
 }
 
 impl DocsServer {
+    /// Error for a missing page: existing pages that resemble it.
+    async fn not_found(&self, path: &str) -> String {
+        let page = path.trim_matches('/');
+        let similar = match &self.search {
+            SearchBackend::Qdrant { client, encoder } => {
+                suggest(
+                    client.as_ref(),
+                    Some(encoder),
+                    page,
+                    self.site.sources(),
+                    MAX_SUGGESTIONS,
+                )
+                .await
+            }
+            #[cfg(test)]
+            SearchBackend::Fixed(fixed) => {
+                suggest(
+                    &fixed.pages,
+                    None,
+                    page,
+                    self.site.sources(),
+                    MAX_SUGGESTIONS,
+                )
+                .await
+            }
+        };
+        // The page index hides pages that aren't readable here; it's a
+        // nicety, so suggestions still work if it doesn't load.
+        let manifest = self.site.manifest().await.ok();
+        let mut suggestions: Vec<(String, String)> = Vec::new();
+        match similar {
+            Ok(pages) => {
+                for suggestion in pages {
+                    let page = format!("/{}/", suggestion.page);
+                    let entry = manifest.as_ref().and_then(|m| m.pages.get(&page));
+                    if entry.is_some_and(|e| !e.rendered || e.external_url.is_some()) {
+                        continue;
+                    }
+                    let title = entry.map_or(suggestion.title, |e| e.title.clone());
+                    suggestions.push((title, self.site.url(&page)));
+                }
+            }
+            Err(e) => log::warn!("No suggestions from the page index: {e}"),
+        }
+
+        if suggestions.is_empty() {
+            return format!(
+                "No page at {path}. Use search_docs or list_docs to find the right one."
+            );
+        }
+        let rows: Vec<String> = suggestions
+            .into_iter()
+            .map(|(title, url)| {
+                if title.is_empty() {
+                    format!("- {url}")
+                } else {
+                    format!("- {title}: {url}")
+                }
+            })
+            .collect();
+        format!(
+            "No page at {path}. These existing pages may be the one you meant:\n\n{}\n\n\
+             Read one with get_page, or use search_docs or list_docs to find others.",
+            rows.join("\n")
+        )
+    }
+
     async fn search_source(
         &self,
         query: &str,

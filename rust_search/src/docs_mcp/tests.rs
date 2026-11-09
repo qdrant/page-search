@@ -15,6 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{DocsServer, SearchBackend, Source};
 use crate::docs_mcp::config::{Config, SOURCES};
+use crate::similar_paths::MemoryIndex;
 use crate::snippets::Snippet;
 
 /// Canned search results per source, recording the source and partitions of
@@ -25,6 +26,8 @@ pub struct FixedSearch {
     pub requests: Mutex<Vec<(String, Vec<String>)>>,
     snippets: Vec<Value>,
     pub snippet_requests: Mutex<Vec<Option<String>>>,
+    /// The pages of the fake site, for suggestions.
+    pub pages: MemoryIndex,
 }
 
 impl FixedSearch {
@@ -224,6 +227,16 @@ impl Harness {
             sources: sources.iter().map(|s| s.to_string()).collect(),
             ..Config::default()
         };
+        let mut search = search;
+        search.pages = MemoryIndex(
+            manifest()["pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|page| page["rendered"] != false)
+                .map(|page| page["path"].as_str().unwrap().trim_matches('/').to_string())
+                .collect(),
+        );
         let search = Arc::new(search);
         let server = DocsServer::new(config, SearchBackend::Fixed(search.clone()));
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
@@ -537,10 +550,69 @@ async fn instructions_with_unpartitioned_sections() {
 
 #[tokio::test]
 async fn get_page_reports_missing_page() {
-    let h = Harness::new(true).await;
-    let result = h.call("get_page", json!({"page": "search/nope"})).await;
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let result = h.call("get_page", json!({"page": "nope/nothing"})).await;
     assert!(is_error(&result));
-    assert!(text(&result).contains("No page at /documentation/search/nope/"));
+    let text = text(&result);
+    assert!(
+        text.contains("No page at /documentation/nope/nothing/"),
+        "{text}"
+    );
+    assert!(text.contains("Use search_docs or list_docs"), "{text}");
+}
+
+#[tokio::test]
+async fn missing_page_suggests_its_closest_ancestor() {
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let text = h
+        .text("get_page", json!({"page": "search/nope/deeper"}))
+        .await;
+    let base = h.base();
+    assert!(
+        text.contains(&format!("- Search: {base}/documentation/search/")),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn missing_page_suggests_similar_paths_without_searching() {
+    let h = Harness::new(true).await;
+    let result = h.call("get_page", json!({"page": "concepts/filter"})).await;
+    assert!(is_error(&result));
+    let text = text(&result);
+    let base = h.base();
+    assert!(
+        text.starts_with("No page at /documentation/concepts/filter/."),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "- Filtering: {base}/documentation/search/filtering/"
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("/documentation/search/filtering/").count(),
+        1,
+        "{text}"
+    );
+    assert!(!text.contains("/blog/"), "{text}");
+    // Meaning is part of the page index query: search_docs isn't called.
+    assert!(h.search.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn missing_page_suggests_close_slugs_only() {
+    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let text = h
+        .text("get_page", json!({"page": "/blog/new-posts/"}))
+        .await;
+    let base = h.base();
+    assert!(
+        text.contains(&format!("- New Post: {base}/blog/new-post/")),
+        "{text}"
+    );
+    assert!(!text.contains("/blog/old-post/"), "{text}");
 }
 
 #[tokio::test]

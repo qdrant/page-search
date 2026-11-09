@@ -69,3 +69,35 @@ impl QueryEncoder {
         }
     }
 }
+
+impl QueryEncoder {
+    /// Vectors of `texts` to store in points. Production lets Qdrant Cloud
+    /// embed them on upsert; the local model embeds them here.
+    pub async fn embed_documents(
+        &self,
+        texts: Vec<String>,
+    ) -> anyhow::Result<Vec<qdrant_client::qdrant::Vector>> {
+        match self {
+            Self::Cloud => Ok(texts
+                .into_iter()
+                .map(|text| Document::new(text, NEURAL_ENCODER).into())
+                .collect()),
+            #[cfg(feature = "local-embeddings")]
+            Self::Local(model) => {
+                let model = model.clone();
+                let vectors =
+                    tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Vec<f32>>> {
+                        let mut model = model
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("embedding model lock poisoned"))?;
+                        Ok(model.embed(texts, None)?)
+                    })
+                    .await??;
+                Ok(vectors
+                    .into_iter()
+                    .map(qdrant_client::qdrant::Vector::new_dense)
+                    .collect())
+            }
+        }
+    }
+}

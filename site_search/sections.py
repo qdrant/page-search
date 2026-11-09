@@ -258,6 +258,14 @@ def main():
         wait=True,
     )
 
+    # /md lists the sections of a page in order with order_by on line.
+    qdrant_client.create_payload_index(
+        collection_name=SECTION_COLLECTION_NAME,
+        field_name="line",
+        field_schema=PayloadSchemaType.INTEGER,
+        wait=True,
+    )
+
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
