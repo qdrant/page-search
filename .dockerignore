@@ -1,2 +1,5 @@
 data/
 venv
+# The indexer image only needs the Python code.
+rust_search/
+.git

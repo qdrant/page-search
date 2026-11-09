@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use super::fusion::{self, Strategy};
 use super::models::{Skill, SkillSearchResult};
+use crate::qdrant::SKILLS_COLLECTION_NAME;
 
 fn slugify_heading(title: &str) -> String {
     let s = title.to_lowercase();
@@ -21,7 +22,6 @@ fn slugify_heading(title: &str) -> String {
     re_nonword.replace_all(&s, "").to_string()
 }
 
-const SKILLS_COLLECTION_NAME: &str = "skills";
 const SKILLS_ENCODER: &str = "mixedbread-ai/mxbai-embed-large-v1";
 
 fn skills_exact_limit() -> u64 {

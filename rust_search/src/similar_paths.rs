@@ -30,10 +30,10 @@ use qdrant_client::qdrant::{
 };
 use qdrant_client::{Payload, Qdrant};
 
-use crate::common::PAGE_COLLECTION_NAME;
 use crate::embedding::QueryEncoder;
 #[cfg(doc)]
 use crate::embedding::NEURAL_ENCODER;
+use crate::qdrant::PAGE_COLLECTION_NAME;
 
 /// Letter n-grams of the slug, for misspellings.
 pub const SLUG_VECTOR: &str = "slug";

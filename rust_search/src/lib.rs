@@ -3,9 +3,9 @@
 //! setup tools. The service also logs its requests for an admin panel.
 
 pub mod admin;
-pub mod common;
 pub mod docs_mcp;
 pub mod embedding;
+pub mod qdrant;
 pub mod request_log;
 pub mod search;
 pub mod sections;

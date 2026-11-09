@@ -14,10 +14,6 @@ name = "index_prefix"
 path = "src/index_prefix.rs"
 
 [[bin]]
-name = "setup_collection"
-path = "src/setup_collection.rs"
-
-[[bin]]
 name = "index_pages"
 path = "src/index_pages.rs"
 
@@ -27,11 +23,7 @@ actix-cors = "0.6.4"
 anyhow = "1.0.71"
 env_logger = "0.10.0"
 log = "0.4"
-ndarray = "0.15.6"
-ort = { version = "1.15", features = ["load-dynamic"] }
 qdrant-client = "1.20"
-rust_tokenizers = "8.1.0"
-safe-transmute = "0.11.2"
 serde = "1.0.151"
 serde_json = "1.0.103"
 tokio = { version = "1.28.2", features = ["rt", "macros", "rt-multi-thread"] }

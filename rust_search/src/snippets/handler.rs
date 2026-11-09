@@ -10,8 +10,8 @@ use qdrant_client::Qdrant;
 use serde::Deserialize;
 
 use super::models::{Snippet, SnippetSearchResult};
+use crate::qdrant::SNIPPET_COLLECTION_NAME;
 
-const SNIPPET_COLLECTION_NAME: &str = "snippet-search";
 const SNIPPET_ENCODER: &str = "mixedbread-ai/mxbai-embed-large-v1";
 
 fn default_limit() -> u64 {

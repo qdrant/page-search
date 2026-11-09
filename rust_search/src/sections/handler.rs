@@ -11,7 +11,7 @@ use qdrant_client::Qdrant;
 use serde::Deserialize;
 
 use super::models::{Section, SectionSearchResult, slugify_heading};
-use crate::common::SECTION_COLLECTION_NAME;
+use crate::qdrant::SECTION_COLLECTION_NAME;
 use crate::embedding::QueryEncoder;
 use crate::similar_paths::{suggest, Suggestion};
 

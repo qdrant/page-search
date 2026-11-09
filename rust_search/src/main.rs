@@ -2,10 +2,8 @@ use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 
 use actix_cors::Cors;
 use actix_web::{main, middleware, web::Data, App, HttpServer};
-use qdrant_client::Qdrant;
 use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
 use rust_search::admin::{AdminConfig, AdminPanel, ReplayTarget};
-use rust_search::common::get_qdrant_url;
 use rust_search::docs_mcp::{config::Config, DocsServer, SearchBackend};
 use rust_search::embedding::QueryEncoder;
 use rust_search::request_log::{self, ReplayToken, RequestLog};
@@ -26,14 +24,8 @@ async fn main() -> std::io::Result<()> {
     log_builder.init();
 
     let uri = std::env::var("SERVICE_URL").map_or("0.0.0.0:8005".into(), Cow::Owned);
-    let qdrant_url = get_qdrant_url();
-    let api_key = std::env::var("QDRANT_API_KEY");
     let addr: SocketAddr = uri.parse().expect("malformed URI");
-    let mut builder = Qdrant::from_url(&qdrant_url);
-    if let Ok(key) = &api_key {
-        builder = builder.api_key(key.clone());
-    }
-    let qdrant = builder.build().unwrap();
+    let qdrant = rust_search::qdrant::client_from_env().expect("invalid Qdrant settings");
     qdrant.health_check().await.unwrap();
     let qdrant = Arc::new(qdrant);
     let encoder = QueryEncoder::from_env().expect("invalid QUERY_EMBEDDING");

@@ -1,28 +1,15 @@
 use anyhow::Result;
 use itertools::Itertools;
 use qdrant_client::qdrant::{
-    vectors_config::Config, Memory, OptimizersConfigDiff, PointId, PointStruct, VectorParams,
-    Vectors, VectorsConfig,
+    vectors_config::Config, Memory, OptimizersConfigDiff, PointStruct, VectorParams, Vectors,
+    VectorsConfig,
 };
 use qdrant_client::qdrant::{CreateCollection, Distance, Document, UpsertPointsBuilder, Value};
-use qdrant_client::Qdrant;
-use rust_search::common::{get_qdrant_url, PREFIX_COLLECTION_NAME};
+use rust_search::embedding::NEURAL_ENCODER;
+use rust_search::qdrant::{client_from_env, prefix_to_id, PREFIX_COLLECTION_NAME};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use tokio::main;
-
-const NEURAL_ENCODER: &str = "sentence-transformers/all-MiniLM-L6-v2";
-
-fn prefix_to_id(prefix: &str) -> PointId {
-    let len = prefix.len();
-    PointId::from(u64::from_le_bytes(if len < 8 {
-        let mut result = [0_u8; 8];
-        result[..len].copy_from_slice(prefix.as_bytes());
-        result
-    } else {
-        prefix.as_bytes()[..8].try_into().unwrap()
-    }))
-}
 
 fn n_chars(word: &str, n: usize) -> &str {
     if word.len() <= n {
@@ -69,12 +56,7 @@ async fn main() -> Result<()> {
     });
 
     // store the word prefixes with embedding
-    let qdrant_url = get_qdrant_url();
-    let mut builder = Qdrant::from_url(&qdrant_url);
-    if let Ok(key) = std::env::var("QDRANT_API_KEY") {
-        builder = builder.api_key(key);
-    }
-    let qdrant_client = builder.build()?;
+    let qdrant_client = client_from_env()?;
 
     if !qdrant_client
         .collection_exists(PREFIX_COLLECTION_NAME)

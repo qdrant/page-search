@@ -1,58 +1,62 @@
-# Development documentation
+# Indexers
 
+The Python modules in `site_search` crawl the site and fill the Qdrant
+collections. The service that answers searches is in `rust_search`.
 
 ## Setup
 
 - `pip install virtualenv` - install venv manager
-- `virtualenv venv` - create virtual env 
+- `virtualenv venv` - create virtual env
 - `source venv/bin/activate` - enter venv
 - `pip install poetry` - install package manager
 - `poetry install` - install all dependencies
 
-## Tests
-
-With a local Qdrant instance running
-
-```
-poetry run pytest
-```
-
-or with a Docker container
-
-```
-./tests/integration-tests.sh
-```
+They read `QDRANT_HOST`, `QDRANT_PORT` (6333 by default) and `QDRANT_API_KEY`
+from the environment or a `.env` file.
 
 ## Run
 
-### Crawler
+### Site
 
-Crawl content of documentation website
-
-```
-poetry run python site_search/crawl.py 
-```
-
-It creates the file `data/abstracts.jsonl`.
-
-### Encode & upload
-
-To encode the scraped abstract and upload the vectors
+Crawl the HTML of qdrant.tech into `data/abstracts.jsonl`, then embed it into
+the `site` collection:
 
 ```
-poetry run python site_search/encode.py 
+poetry run python -m site_search.crawl
+poetry run python -m site_search.encode
 ```
 
-### Service
+### Sections
 
-To access the search service built-on top of Qdrant.
-
-```
-poetry run python site_search/service.py
-```
-
-then go to
+Read the Markdown of every page into the `sections` collection. Run the Rust
+`index_pages` binary afterwards to rebuild `pages`.
 
 ```
-http://localhost:8000/docs
+poetry run python -m site_search.sections
+```
+
+### Skills
+
+Read skills.qdrant.tech into the `skills` collection:
+
+```
+poetry run python -m site_search.skills
+```
+
+### Snippets
+
+Read the code examples of every page into the `snippet-search` collection.
+New examples get descriptions from OpenAI, so this needs `OPENAI_API_KEY`.
+
+```
+poetry run python -m site_search.snippets
+```
+
+## Docker
+
+The update workflow builds the root `Dockerfile` and runs each module in it:
+
+```
+docker build -t page-search-indexer .
+docker run --rm -e QDRANT_HOST -e QDRANT_API_KEY page-search-indexer python -m site_search.sections
 ```
