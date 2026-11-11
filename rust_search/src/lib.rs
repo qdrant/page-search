@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod docs_mcp;
 pub mod embedding;
+pub mod pages;
 pub mod qdrant;
 pub mod request_log;
 pub mod search;

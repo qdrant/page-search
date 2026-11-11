@@ -33,6 +33,7 @@ use qdrant_client::{Payload, Qdrant};
 use crate::embedding::QueryEncoder;
 #[cfg(doc)]
 use crate::embedding::NEURAL_ENCODER;
+use crate::pages::{PageMeta, RENDERED_FIELD};
 use crate::qdrant::PAGE_COLLECTION_NAME;
 
 /// Letter n-grams of the slug, for misspellings.
@@ -153,18 +154,27 @@ impl PageText {
     }
 }
 
-/// The point of a page in the `pages` collection. `meaning` is the embedding
-/// of [`PageText::meaning`]; Qdrant computes `words` itself.
-pub fn page_point(id: u64, page: &PageText, meaning: Vector) -> PointStruct {
+/// The point of a page in the `pages` collection, with its metadata.
+/// `meaning` is the embedding of [`PageText::meaning`]; Qdrant computes
+/// `words` itself.
+pub fn page_point(id: u64, page: &PageText, meta: &PageMeta, meaning: Vector) -> PointStruct {
     let path = page.page.trim_matches('/');
     let (indices, values) = slug_ngrams(path);
-    let payload = Payload::try_from(serde_json::json!({
+    let mut payload = serde_json::json!({
         "page": path,
         "title": page.title,
         "source": source(path),
         "ancestors": page_ancestors(path),
-    }))
-    .expect("the payload is a JSON object");
+    });
+    let serde_json::Value::Object(meta) = serde_json::to_value(meta).expect("PageMeta serializes")
+    else {
+        unreachable!("PageMeta serializes to an object")
+    };
+    payload
+        .as_object_mut()
+        .expect("the payload is a JSON object")
+        .extend(meta);
+    let payload = Payload::try_from(payload).expect("the payload is a JSON object");
     PointStruct::new(
         id,
         NamedVectors::default()
@@ -184,17 +194,16 @@ pub fn similar_query(
     limit: usize,
 ) -> QueryPoints {
     let path = path.trim_matches('/');
-    let filter = (!sources.is_empty())
-        .then(|| Filter::must([Condition::matches("source", sources.to_vec())]));
+    let mut filter = readable();
+    if !sources.is_empty() {
+        filter.must = vec![Condition::matches("source", sources.to_vec())];
+    }
     let candidates = |query: Query, using: &str| {
-        let mut prefetch = PrefetchQueryBuilder::default()
+        PrefetchQueryBuilder::default()
             .query(query)
             .using(using)
-            .limit(CANDIDATES);
-        if let Some(filter) = &filter {
-            prefetch = prefetch.filter(filter.clone());
-        }
-        prefetch
+            .limit(CANDIDATES)
+            .filter(filter.clone())
     };
 
     let (indices, values) = slug_ngrams(path);
@@ -259,10 +268,17 @@ fn boost(weight: f32, condition: Condition) -> Expression {
     .into()
 }
 
+/// Pages that can be read: not sections without a page of their own.
+fn readable() -> Filter {
+    Filter::must_not([Condition::matches(RENDERED_FIELD, false)])
+}
+
 /// The query for those of `pages` that exist.
 fn existing_query(pages: &[String]) -> QueryPoints {
+    let mut filter = readable();
+    filter.must = vec![Condition::matches("page", pages.to_vec())];
     QueryPointsBuilder::new(PAGE_COLLECTION_NAME)
-        .filter(Filter::must([Condition::matches("page", pages.to_vec())]))
+        .filter(filter)
         .limit(pages.len().max(1) as u64)
         .with_payload(page_selector())
         .build()
@@ -559,7 +575,13 @@ mod tests {
         };
         assert_eq!(page.words(), "airbyte Airbyte");
         assert_eq!(page.meaning(), "Airbyte. airbyte. Setup, Usage");
-        let point = page_point(7, &page, Vector::new_dense(vec![0.0; 3]));
+        let meta = PageMeta {
+            partition: "ecosystem".to_string(),
+            weight: 10,
+            aliases: vec!["documentation/airbyte".to_string()],
+            ..PageMeta::default()
+        };
+        let point = page_point(7, &page, &meta, Vector::new_dense(vec![0.0; 3]));
         assert_eq!(
             serde_json::Value::from(Payload::from(point.payload)),
             serde_json::json!({
@@ -567,6 +589,12 @@ mod tests {
                 "title": "Airbyte",
                 "source": "documentation",
                 "ancestors": ["documentation", "documentation/data-management"],
+                "description": "",
+                "kind": "page",
+                "partition": "ecosystem",
+                "weight": 10,
+                "aliases": ["documentation/airbyte"],
+                "rendered": true,
             })
         );
     }
@@ -616,10 +644,11 @@ mod tests {
     fn searches_meaning_only_with_an_encoder() {
         let query = similar_query("documentation/x", &[], None, 5);
         assert_eq!(query.prefetch[0].prefetch.len(), 2);
+        // Without sources, only sections without a page are left out.
         assert!(query.prefetch[0]
             .prefetch
             .iter()
-            .all(|p| p.filter.is_none()));
+            .all(|p| p.filter == Some(readable())));
     }
 
     #[test]
