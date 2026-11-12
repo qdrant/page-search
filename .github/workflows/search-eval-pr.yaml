@@ -1,0 +1,77 @@
+name: Search eval (PR)
+
+# Scoped to PRs that touch the eval itself. The eval measures the LIVE service
+# and index, and a PR's code is not deployed yet, so a PR changing the crawler
+# or the Rust service would get numbers identical to any other PR. Where a
+# comment genuinely adds information is an eval_cases.yaml edit, because a label
+# change moves the score immediately.
+on:
+  pull_request:
+    paths:
+      - 'site_search/eval*'
+      - 'tests/test_eval*'
+      - '.github/workflows/search-eval-pr.yaml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.11'
+
+    - name: install deps
+      run: pip install requests pyyaml
+
+    # continue-on-error so a tripped gate still gets a comment explaining why.
+    # The last step re-asserts the failure so the check still goes red.
+    - name: run search evals
+      id: eval
+      continue-on-error: true
+      run: python -m site_search.eval --summary comment.md --json eval-results.json
+
+    - name: add report to the run summary
+      if: always()
+      run: test -f comment.md && cat comment.md >> "$GITHUB_STEP_SUMMARY" || true
+
+    # comment.md is missing only when the eval crashed before rendering, which
+    # is exactly when a comment matters most. Substitute a stub so the sticky
+    # action always has a body to post.
+    - name: ensure a comment body exists
+      if: always()
+      run: |
+        test -f comment.md || printf '%s\n' \
+          '## Docs search eval' \
+          '' \
+          'The eval step produced no report — it failed before rendering one.' \
+          "[workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" \
+          > comment.md
+
+    # Edits its own previous comment in place, keyed by `header`, instead of
+    # piling up one per push. The action owns the hidden marker, so nothing in
+    # the Python has to know about it.
+    - uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+      if: always()
+      with:
+        header: docs-search-eval
+        path: comment.md
+
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always()
+      with:
+        name: eval-results-pr
+        path: eval-results.json
+        if-no-files-found: ignore
+
+    - name: fail if the gate tripped
+      if: steps.eval.outcome == 'failure'
+      run: |
+        echo "eval gate failed — see the report comment on this PR" >&2
+        exit 1
