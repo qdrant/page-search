@@ -1,3 +1,5 @@
+# The indexers for the site, sections, skills, and snippet-search collections.
+# The update-search-index workflow builds it and runs one module per job.
 FROM python:3.10-slim
 
 ENV PYTHONFAULTHANDLER=1 \
@@ -18,12 +20,9 @@ COPY poetry.lock pyproject.toml /code/
 RUN poetry config virtualenvs.create false \
   && poetry install --without dev --no-interaction --no-ansi --no-root
 
-# Install pre-trained models here
-# Example:
-  RUN python -c 'from fastembed import TextEmbedding; TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")'
+# The model encode.py embeds the site collection with
+RUN python -c 'from fastembed import TextEmbedding; TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")'
 
 
 # Creating folders, and files for a project:
 COPY . /code
-
-CMD ["uvicorn", "site_search.service:app", "--host", "0.0.0.0", "--port", "8005", "--workers", "${WORKERS:-1}"]

@@ -1,14 +1,28 @@
 # Speedy Semantic Search
 
-This project has two implementations, one in Python and one in Rust. See [dev-docs.md](./dev-docs.md) for an overview over the Python version and tools, and the [rust_search README](./rust_search) for one on the Rust version and helpers.
+The search behind [qdrant.tech](https://qdrant.tech): the search box of the
+documentation, Markdown pages for agents at `/md`, skills and code example
+search, and a docs MCP server at `/mcp`. It runs at `https://search.qdrant.tech`.
 
-Both the python and Rust version contain a service that is able to use a Qdrant vector search engine to do a semantic search in the matter of milliseconds. The python version does a text search below 4 characters, while the Rust version always does a full semantic search.
+It has two parts:
 
-Both versions use the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) model made available by Hugging Face for embedding, and [Qdrant](https://qdrant.tech) for searching.
+- **The service**, in Rust, in [`rust_search`](./rust_search). It answers every
+  request from [Qdrant](https://qdrant.tech) collections. See its
+  [README](./rust_search/README.md).
+- **The indexers**, which crawl qdrant.tech and skills.qdrant.tech every night and
+  fill the collections. Most are in Python, in [`site_search`](./site_search),
+  see [dev-docs.md](./dev-docs.md); `index_pages` and `index_prefix` are Rust
+  binaries in `rust_search`.
 
-The services both have the same `GET /api/search` endpoint with the following arguments:
+| Collection | Filled by | Used by |
+|---|---|---|
+| `site` | `site_search.crawl`, then `site_search.encode` | `/api/search`, `search_docs` |
+| `prefix-cache` | `index_prefix` (once, from `words.txt`) | `/api/search` for short queries |
+| `sections` | `site_search.sections` | `/md`, `get_page` suggestions |
+| `pages` | `index_pages`, after `sections` | Suggestions for missing pages |
+| `skills` | `site_search.skills` | `/skills` |
+| `snippet-search` | `site_search.snippets` | `/snippets/search`, `search_snippets` |
 
-* `q` contains the term that is going to be searched.
-* `section` contains a section that is added by the python version's crawler that can be used to additionally filter the search to a particular section of the page. This argument is optional.
-
-The code in this project powers the [Qdrant documentation](https://qdrant.tech/documentation)'s search box.
+The [Update search index](./.github/workflows/update-search-index.yaml)
+workflow runs the indexers nightly, and [Deploy](./.github/workflows/deploy.yml)
+deploys the service on every push to `master`.

@@ -18,8 +18,8 @@ use qdrant_client::qdrant::{
 use qdrant_client::Qdrant;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{COLLECTION_NAME, PREFIX_COLLECTION_NAME};
 use crate::embedding::QueryEncoder;
+use crate::qdrant::{prefix_to_id, PREFIX_COLLECTION_NAME, SITE_COLLECTION_NAME};
 
 /// Number of results `/api/search` returns.
 pub const SEARCH_LIMIT: u64 = 5;
@@ -52,17 +52,6 @@ fn post_process_response_text(text: &str, query: &str) -> String {
     });
 
     highlighted_text.to_string()
-}
-
-fn prefix_to_id(prefix: &str) -> PointId {
-    let len = prefix.len();
-    PointId::from(u64::from_le_bytes(if len < 8 {
-        let mut result = [0_u8; 8];
-        result[..len].copy_from_slice(prefix.as_bytes());
-        result
-    } else {
-        prefix.as_bytes()[..8].try_into().unwrap()
-    }))
 }
 
 #[derive(Deserialize)]
@@ -132,7 +121,7 @@ fn get_recommend_query(
     conditions: impl IntoIterator<Item = Condition>,
     limit: u64,
 ) -> QueryPoints {
-    QueryPointsBuilder::new(COLLECTION_NAME)
+    QueryPointsBuilder::new(SITE_COLLECTION_NAME)
         .query(RecommendInput {
             positive: vec![prefix_to_id(query).into()],
             ..Default::default()
@@ -149,7 +138,7 @@ fn get_search_query(
     conditions: impl IntoIterator<Item = Condition>,
     limit: u64,
 ) -> QueryPoints {
-    QueryPointsBuilder::new(COLLECTION_NAME)
+    QueryPointsBuilder::new(SITE_COLLECTION_NAME)
         .query(vector)
         .filter(Filter::must(conditions))
         .limit(limit)
@@ -221,7 +210,7 @@ async fn recommend_request(
         .collect::<Vec<_>>();
 
     match client
-        .query_batch(QueryBatchPointsBuilder::new(COLLECTION_NAME, queries))
+        .query_batch(QueryBatchPointsBuilder::new(SITE_COLLECTION_NAME, queries))
         .await
     {
         Ok(response) => {
@@ -249,7 +238,7 @@ async fn search_request(
         .collect::<Vec<_>>();
 
     let response = client
-        .query_batch(QueryBatchPointsBuilder::new(COLLECTION_NAME, queries))
+        .query_batch(QueryBatchPointsBuilder::new(SITE_COLLECTION_NAME, queries))
         .await?;
     log::debug!("Search Qdrant time: {:?}", response.time);
     Ok(merge_results(response.result, limit))

@@ -15,8 +15,8 @@ use qdrant_client::qdrant::{
     SparseVectorsConfigBuilder, UpsertPointsBuilder, VectorParamsBuilder, VectorsConfigBuilder,
 };
 use qdrant_client::Qdrant;
-use rust_search::common::{get_qdrant_url, PAGE_COLLECTION_NAME, SECTION_COLLECTION_NAME};
 use rust_search::embedding::QueryEncoder;
+use rust_search::qdrant::{client_from_env, PAGE_COLLECTION_NAME, SECTION_COLLECTION_NAME};
 use rust_search::similar_paths::{page_point, PageText, MEANING_VECTOR, SLUG_VECTOR, WORDS_VECTOR};
 use tokio::main;
 
@@ -99,11 +99,7 @@ async fn section_pages(client: &Qdrant) -> Result<Vec<PageText>> {
 
 #[main]
 async fn main() -> Result<()> {
-    let mut builder = Qdrant::from_url(&get_qdrant_url());
-    if let Ok(key) = std::env::var("QDRANT_API_KEY") {
-        builder = builder.api_key(key);
-    }
-    let client = builder.build()?;
+    let client = client_from_env()?;
     let encoder = QueryEncoder::from_env()?;
 
     let pages = section_pages(&client).await?;

@@ -6,7 +6,6 @@ __pycache__
 htmlcov
 *.iml
 data
-/rust_search/all-MiniLM-L6-v2.onnx
 /rust_search/target
 .env
 /rust_search/.fastembed_cache

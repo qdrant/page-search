@@ -4,15 +4,15 @@ from typing import Iterable
 
 import tqdm
 from blingfire import text_to_sentences
+from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType, PointStruct
 
-from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY
-from site_search.neural_searcher import NeuralSearcher
+from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY, NEURAL_ENCODER
 
 BATCH_SIZE = 256
 
-encoder = NeuralSearcher(COLLECTION_NAME)
+encoder = TextEmbedding(model_name=NEURAL_ENCODER)
 
 
 def read_records(filename: str) -> Iterable[dict]:
@@ -46,7 +46,7 @@ if __name__ == '__main__':
     qdrant_client.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(
-            size=encoder.get_model_dim(),
+            size=encoder.embedding_size,
             distance=Distance.COSINE
         )
     )
@@ -55,7 +55,10 @@ if __name__ == '__main__':
     records_reader = read_sentence_records
 
     payloads = records_reader(records_path)
-    vectors = encoder.encode_iter(tqdm.tqdm(read_text_records(records_path, reader=records_reader)))
+    vectors = (
+        vector.tolist()
+        for vector in encoder.embed(tqdm.tqdm(read_text_records(records_path, reader=records_reader)), parallel=4)
+    )
 
     index_response = qdrant_client.create_payload_index(
         collection_name=COLLECTION_NAME,

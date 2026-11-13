@@ -1,34 +1,44 @@
-Site search, fast
+# Site search service
 
-### Preparation
+The service behind the search on qdrant.tech. It answers from the Qdrant
+collections that the indexers fill (see the [root README](../README.md)) and
+serves:
 
-This version of the search uses a local model. So you need the model in the working path of the service. To get the ONNX file, run
+| Endpoint | What it does |
+|---|---|
+| `GET /api/search?q=&section=&partition=` | The site search box: lines of the `site` collection |
+| `GET /md/<page>?s=&q=` | Pages and sections of the `sections` collection as Markdown |
+| `GET /skills` | Searches the `skills` collection |
+| `GET /snippets/search` | Searches code examples in the `snippet-search` collection |
+| `/mcp` | The docs MCP server, see below |
+| `/admin` | Request statistics, see below |
+
+### Running
+
+All binaries read the Qdrant address and API key from the environment:
 
 ```bash
-curl -L -o all-MiniLM-L6-v2.onnx https://huggingface.co/optimum/all-MiniLM-L6-v2/resolve/main/model.onnx
-```
-
-in the `rust_search` directory.
-
-Before we run anything, we need the URL and possibly API key. All binaries take these from environment variables. Set them as follows:
-
-```bash
-export QDRANT_URL=#<your Qdrant address including port>
+export QDRANT_URL=#<your Qdrant address including the gRPC port, 6334>
 export QDRANT_API_KEY=#<your Qdrant API key as needed>
 ```
 
-Since the embeddings are the same as with the python search, you can easily re-use its collection. Alternatively you can run the `setup_collection` binary, after running `crawl` (see the above directory).
+Without `QDRANT_URL`, they use `https://$QDRANT_HOST:6334` if `QDRANT_HOST` is
+set, and `http://localhost:6334` otherwise.
 
-We also need to set up a prefix cache collection for the recommender function. To do that, run
+Queries are embedded by Qdrant Cloud with `sentence-transformers/all-MiniLM-L6-v2`.
+For a local Qdrant, see [Testing locally](#testing-locally).
+
+Short queries are matched against embeddings of word prefixes in the
+`prefix-cache` collection. Fill it once with
 
 ```bash
 cargo run --release --bin index_prefix
 ```
 
-Running the service can be done via
+Run the service with
 
 ```bash
-export SERVICE_URL=#<the URL the service will be listening to>
+export SERVICE_URL=#<the address the service listens on, 0.0.0.0:8005 by default>
 cargo run --release --bin service
 ```
 
