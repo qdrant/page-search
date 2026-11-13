@@ -7,7 +7,6 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 import tqdm
-from loguru import logger
 from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel
@@ -102,11 +101,9 @@ def _parse_markdown(url: str) -> _ParsingResult:
         if node.type == "heading"
     ]
 
-    if len(headings) == 0:
-        logger.warning(f"No headings found in {url}, skipping.")
-        return _ParsingResult(sections=[], url=url)
-
-    if headings[0].line != 0:
+    # Text before the first heading, or the whole page if it has no headings,
+    # is a section without a title, so that every page can be read.
+    if not headings or headings[0].line != 0:
         headings.insert(0, _Heading(tag="h1", line=0, title=""))
 
     lines = document.splitlines()

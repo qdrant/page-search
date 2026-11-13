@@ -40,7 +40,7 @@ jobs:
     - name: crawl and index sections
       run: |
         docker run --rm -i -v $(pwd)/tmp:/code/data -e QDRANT_HOST=${{ secrets.QDRANT_HOST }} -e QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }} page-search-indexer python -m site_search.sections
-    # Suggestions for missing pages search the pages that have sections.
+    # Suggestions for missing pages search the pages of /docs-manifest.json.
     - name: index pages
       working-directory: rust_search
       env:
