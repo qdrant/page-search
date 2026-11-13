@@ -30,8 +30,7 @@ poetry run python -m site_search.encode
 
 Read the Markdown of every page into the `sections` collection, one point per
 section. Text before the first heading, or a whole page without headings, is a
-section without a title. Run the Rust `index_pages` binary afterwards to
-rebuild `pages`.
+section without a title.
 
 ```
 poetry run python -m site_search.sections

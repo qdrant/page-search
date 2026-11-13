@@ -9,7 +9,7 @@
 //! - `words`: `qdrant/bm25` of the slug words and the title, embedded by
 //!   Qdrant itself, with the IDF modifier. Qdrant's English stemmer and
 //!   stopwords make `indexes` find `indexing`, and leave out words like `and`.
-//! - `meaning`: the page's title, slug words, and headings embedded with
+//! - `meaning`: the page's title, slug words, and description embedded with
 //!   [`NEURAL_ENCODER`], so rephrased paths find pages by meaning.
 //!
 //! Each vector is searched with a minimum score, the hits are fused with RRF,
@@ -40,7 +40,7 @@ use crate::qdrant::PAGE_COLLECTION_NAME;
 pub const SLUG_VECTOR: &str = "slug";
 /// BM25 of the slug words and title, for the same words in other forms.
 pub const WORDS_VECTOR: &str = "words";
-/// Dense embedding of the title, slug words, and headings, for rephrasings.
+/// Dense embedding of the title, slug words, and description, for rephrasings.
 pub const MEANING_VECTOR: &str = "meaning";
 /// Qdrant's built-in BM25 model: tokenizes, stems, and drops English stopwords.
 pub const BM25_MODEL: &str = "qdrant/bm25";
@@ -130,11 +130,11 @@ fn page_ancestors(page: &str) -> Vec<String> {
         .collect()
 }
 
-/// A page as `index_pages` reads it from the `sections` collection.
+/// A page as `index_pages` reads it from the page index.
 pub struct PageText {
     pub page: String,
     pub title: String,
-    pub headings: Vec<String>,
+    pub meta: PageMeta,
 }
 
 impl PageText {
@@ -143,13 +143,13 @@ impl PageText {
         format!("{} {}", slug_words(&self.page).join(" "), self.title)
     }
 
-    /// What `meaning` is built from: the title, slug words, and headings.
+    /// What `meaning` is built from: the title, slug words, and description.
     pub fn meaning(&self) -> String {
         format!(
             "{}. {}. {}",
             self.title,
             slug_words(&self.page).join(" "),
-            self.headings.join(", ")
+            self.meta.description
         )
     }
 }
@@ -157,7 +157,7 @@ impl PageText {
 /// The point of a page in the `pages` collection, with its metadata.
 /// `meaning` is the embedding of [`PageText::meaning`]; Qdrant computes
 /// `words` itself.
-pub fn page_point(id: u64, page: &PageText, meta: &PageMeta, meaning: Vector) -> PointStruct {
+pub fn page_point(id: u64, page: &PageText, meaning: Vector) -> PointStruct {
     let path = page.page.trim_matches('/');
     let (indices, values) = slug_ngrams(path);
     let mut payload = serde_json::json!({
@@ -166,7 +166,8 @@ pub fn page_point(id: u64, page: &PageText, meta: &PageMeta, meaning: Vector) ->
         "source": source(path),
         "ancestors": page_ancestors(path),
     });
-    let serde_json::Value::Object(meta) = serde_json::to_value(meta).expect("PageMeta serializes")
+    let serde_json::Value::Object(meta) =
+        serde_json::to_value(&page.meta).expect("PageMeta serializes")
     else {
         unreachable!("PageMeta serializes to an object")
     };
@@ -571,17 +572,17 @@ mod tests {
         let page = PageText {
             page: "/documentation/data-management/airbyte/".to_string(),
             title: "Airbyte".to_string(),
-            headings: vec!["Setup".to_string(), "Usage".to_string()],
+            meta: PageMeta {
+                description: "Load data with Airbyte".to_string(),
+                partition: "ecosystem".to_string(),
+                weight: 10,
+                aliases: vec!["documentation/airbyte".to_string()],
+                ..PageMeta::default()
+            },
         };
         assert_eq!(page.words(), "airbyte Airbyte");
-        assert_eq!(page.meaning(), "Airbyte. airbyte. Setup, Usage");
-        let meta = PageMeta {
-            partition: "ecosystem".to_string(),
-            weight: 10,
-            aliases: vec!["documentation/airbyte".to_string()],
-            ..PageMeta::default()
-        };
-        let point = page_point(7, &page, &meta, Vector::new_dense(vec![0.0; 3]));
+        assert_eq!(page.meaning(), "Airbyte. airbyte. Load data with Airbyte");
+        let point = page_point(7, &page, Vector::new_dense(vec![0.0; 3]));
         assert_eq!(
             serde_json::Value::from(Payload::from(point.payload)),
             serde_json::json!({
@@ -589,7 +590,7 @@ mod tests {
                 "title": "Airbyte",
                 "source": "documentation",
                 "ancestors": ["documentation", "documentation/data-management"],
-                "description": "",
+                "description": "Load data with Airbyte",
                 "kind": "page",
                 "partition": "ecosystem",
                 "weight": 10,

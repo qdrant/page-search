@@ -39,7 +39,7 @@ pub struct PageMeta {
 }
 
 impl Default for PageMeta {
-    /// A page the page index doesn't list.
+    /// The values of the fields an entry of the page index leaves out.
     fn default() -> Self {
         Self {
             description: String::new(),

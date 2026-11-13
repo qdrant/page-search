@@ -77,7 +77,7 @@ query (`similar_query` in `src/similar_paths.rs`):
 |---|---|---|
 | `slug` | letter bigrams and trigrams of the slug, unit length (cosine) | misspellings |
 | `words` | `qdrant/bm25` of the slug words and title, embedded by Qdrant, IDF | other forms of the same words, without stopwords |
-| `meaning` | the title, slug words, and headings, embedded with the query model | rephrased paths |
+| `meaning` | the title, slug words, and description, embedded with the query model | rephrased paths |
 
 Each vector is searched with a minimum score, so a path that resembles nothing
 gets no suggestions. The hits are fused with RRF, and a formula raises pages in
@@ -90,31 +90,31 @@ sections in order, using `order_by` on the integer index of `line` in
 
 ## The `pages` collection
 
-The `index_pages` binary builds `pages` from the pages, titles, and headings of
-the `sections` collection, so run it after `site_search.sections`, as the update
-workflow does. It encodes pages with the same code as the queries, `page_point`
+The `index_pages` binary builds `pages` from the site's page index,
+`/docs-manifest.json`, which the landing_page repository builds and which lists
+every page that has a Markdown version. It doesn't depend on the other
+collections. It encodes pages with the same code as the queries, `page_point`
 in `src/similar_paths.rs`, and embeds `meaning` like queries, as
 `QUERY_EMBEDDING` says: Qdrant Cloud embeds it on upsert by default.
 
-It also stores what the site's page index, `/docs-manifest.json`, says about
-each page, so the service won't need to read the page index from the site.
-`index_pages` is the only part of this project that reads it. The payload of
-a page (`PageMeta` in `src/pages.rs`):
+It stores what the page index says about each page, so the service won't need
+to read the page index from the site. `index_pages` is the only part of this
+project that reads it. The payload of a page (`PageMeta` in `src/pages.rs`):
 
 | Field | Index | |
 |---|---|---|
 | `page` | keyword | Path without slashes at the ends: `documentation/search/filtering` |
-| `title` | | From the page index, or the first heading of pages it doesn't list |
+| `title` | | From the page index |
 | `source`, `ancestors` | keyword | First segment of the path, and the paths above the page |
 | `description`, `kind`, `partition`, `weight` | | From the page index. `kind` is `page` or `section` |
 | `aliases` | keyword | Old paths of the page, written like `page` |
 | `date`, `lastmod`, `external_url` | | From the page index, when it has them |
 | `rendered` | bool | `false` for a section that only groups pages in the sidebar |
 
-Pages the page index doesn't list, such as `/pricing/`, get the defaults: no
-description, kind `page`, weight 0. Pages it lists that have no sections can't
-be read, so they are left out, and `index_pages` prints them. Sections without
-a page of their own are kept, for listing, but never suggested.
+Fields an entry leaves out get the defaults: no description, kind `page`,
+weight 0. Sections without a page of their own are kept, for listing, but never
+suggested. If the page index can't be read, `index_pages` stops before it
+deletes the current `pages`.
 
 | Variable | Default | |
 |---|---|---|
