@@ -185,16 +185,6 @@ const PAGE_MD: &str = "\
 Use `prefetch`.
 ";
 
-const SNIPPET_MD: &str = "\
-# Code snippet: query-points/hybrid-rrf
-
-## Qdrant Server
-
-```go
-client.Query()
-```
-";
-
 /// Pages as the `pages` collection stores the entries of a page index.
 fn stored(index: &Value) -> Vec<StoredPage> {
     index["pages"]
@@ -240,16 +230,10 @@ impl Harness {
         if backend.pages.is_empty() {
             backend.pages = stored(&page_index());
         }
-        backend.markdown.extend([
-            (
-                "documentation/search/hybrid-queries".to_string(),
-                PAGE_MD.to_string(),
-            ),
-            (
-                "documentation/snippets/query-points/hybrid-rrf".to_string(),
-                SNIPPET_MD.to_string(),
-            ),
-        ]);
+        backend.markdown.insert(
+            "documentation/search/hybrid-queries".to_string(),
+            PAGE_MD.to_string(),
+        );
         backend.similar = MemoryIndex(
             backend
                 .pages
@@ -887,24 +871,4 @@ async fn format_is_a_plain_enum_argument() {
             assert_eq!(format["enum"], json!(["markdown", "json"]), "{}", tool.name);
         }
     }
-}
-
-#[tokio::test]
-async fn get_page_reads_snippet_pages() {
-    let h = Harness::new().await;
-    // Snippet pages aren't in the page index, so there is no title.
-    let body = h
-        .text(
-            "get_page",
-            json!({"page": "https://qdrant.tech/documentation/snippets/query-points/hybrid-rrf/index.md"}),
-        )
-        .await;
-    assert!(
-        body.starts_with(&format!(
-            "Source: {}/documentation/snippets/query-points/hybrid-rrf/",
-            SITE_URL
-        )),
-        "{body}"
-    );
-    assert!(body.contains("```go\nclient.Query()\n```"));
 }

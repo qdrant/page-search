@@ -51,8 +51,8 @@ release they describe.
 Typical flow: search_docs to find the relevant pages, then get_page to read
 them in full. Use list_docs to browse when search terms are unclear, and
 search_snippets to find code examples in a given language. Documentation
-pages link to full snippet pages with the same example in every client
-language; get_page reads those too. Cite the page URLs you relied on.
+pages usually show an example in one language; search_snippets has it in
+every client language. Cite the page URLs you relied on.
 ";
 
 /// A part of qdrant.tech that can be searched.
@@ -465,7 +465,7 @@ impl DocsServer {
 
     /// Find code examples in Qdrant content: the documentation, articles, the blog, and courses.
     ///
-    /// Each result is a code snippet with a description of what it does and the page it is on. Pass a language to get examples for one client. Documentation pages usually show an example in one language and link to a full snippet page with it in every client language; read that with get_page.
+    /// Each result is a code snippet with a description of what it does and the page it is on. Pass a language to get examples for one client. Documentation pages usually show an example in one language; this tool has it in every client language.
     #[tool(annotations(
         read_only_hint = true,
         destructive_hint = false,

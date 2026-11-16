@@ -30,8 +30,7 @@ poetry run python -m site_search.encode
 
 Read the Markdown of every page into the `sections` collection, one point per
 section. Text before the first heading, or a whole page without headings, is a
-section without a title. The snippet pages the documentation links to, under
-`/documentation/snippets/`, are read too: they aren't in the sitemap.
+section without a title.
 
 ```
 poetry run python -m site_search.sections

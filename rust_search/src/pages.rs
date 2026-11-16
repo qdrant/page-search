@@ -14,10 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::qdrant::{PAGE_COLLECTION_NAME, SECTION_COLLECTION_NAME};
 
-/// Pages with a code example in every client language, linked from the
-/// documentation. They can be read, but aren't listed or suggested: the page
-/// index doesn't list them, so they aren't in the `pages` collection.
-pub const SNIPPET_PAGES: &str = "documentation/snippets";
 /// Most sections read for one page.
 const MAX_SECTIONS: u32 = 10_000;
 
@@ -79,11 +75,6 @@ fn any_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, 
 /// slashes at either end, such as `documentation/search/filtering`.
 pub fn page_key(path: &str) -> String {
     path.trim_matches('/').to_string()
-}
-
-/// Whether `page`, written like the `page` payload field, is a snippet page.
-pub fn is_snippet_page(page: &str) -> bool {
-    page == SNIPPET_PAGES || page.starts_with(&format!("{SNIPPET_PAGES}/"))
 }
 
 /// A point of the `pages` collection without its vectors.
@@ -196,15 +187,6 @@ mod tests {
         assert_eq!(stored.title, "FAQ");
         assert_eq!(stored.meta.kind, "section");
         assert!(!stored.meta.rendered);
-    }
-
-    #[test]
-    fn recognizes_snippet_pages() {
-        assert!(is_snippet_page(
-            "documentation/snippets/query-points/hybrid-rrf"
-        ));
-        assert!(!is_snippet_page("documentation/snippets-guide"));
-        assert!(!is_snippet_page("documentation/search"));
     }
 
     #[test]

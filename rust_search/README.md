@@ -56,7 +56,7 @@ It has four read-only tools:
 |---|---|
 | `search_docs(query, sources?, partition?, limit?, format?)` | Searches the `site` collection the same way as `/api/search`, one query per source, and returns one result per page with the headings and passages that matched |
 | `search_snippets(query, language?, limit?, format?)` | Searches the `snippet-search` collection the same way as `/snippets/search`, with the language optional, and returns code examples with their descriptions and pages |
-| `get_page(page)` | Returns a page's Markdown, put together from its sections in the `sections` collection, resolving old URLs through the page index. Also reads the full snippet pages under `/documentation/snippets/`. For a missing page, suggests existing ones |
+| `get_page(page)` | Returns a page's Markdown, put together from its sections in the `sections` collection, resolving old URLs through the page index. For a missing page, suggests existing ones |
 | `list_docs(section?, offset?, limit?, format?)` | Browses the page index: docs and courses in sidebar order, articles and blog posts newest first |
 
 Tools answer in Markdown by default. `format: "json"` returns the same result
