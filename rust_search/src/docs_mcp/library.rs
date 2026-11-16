@@ -1,21 +1,21 @@
-//! Pages and the page index, read from the published site.
-//!
-//! Nothing here keeps its own copy of the content. Pages come from the Markdown
-//! that qdrant.tech publishes for every page at `<url>/index.md`, and the page
-//! list from `/docs-manifest.json`, which the landing_page repository builds
-//! from `qdrant-landing/layouts/index.docsmanifest.json`.
+//! The pages the server lists and reads, from Qdrant: the page index from
+//! the `pages` collection, and each page's Markdown from its sections in the
+//! `sections` collection. Nothing here requests the site.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 use url::Url;
 
 use super::config::{Config, SOURCES};
+use super::server::Backend;
+use crate::pages::{page_key, StoredPage};
 
+/// Where the pages are published.
+pub const SITE_URL: &str = "https://qdrant.tech";
 pub const DOCS_PREFIX: &str = "/documentation/";
 /// Sources listed newest first rather than in sidebar order.
 const DATED_SOURCES: [&str; 2] = ["articles", "blog"];
@@ -23,10 +23,10 @@ const PUBLIC_HOSTS: [&str; 2] = ["qdrant.tech", "www.qdrant.tech"];
 /// Pointers that `single.markdown.md` prepends to every page. An agent already
 /// connected to this server doesn't need them.
 const PREAMBLE_MARKERS: [&str; 2] = ["skills.qdrant.tech", "llms.txt"];
+/// How long the page index is kept before it's read again. Qdrant has a new
+/// one after every nightly indexing.
+const PAGE_INDEX_TTL: Duration = Duration::from_secs(300);
 
-static LLMS_ENTRY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^- \[(?P<title>[^\]]+)\]\((?P<url>[^)]+)\)(?::\s*(?P<description>.*))?$").unwrap()
-});
 static INDEX_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/index\.(md|html)$").unwrap());
 static REPEATED_SLASHES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/{2,}").unwrap());
 
@@ -45,57 +45,30 @@ impl From<String> for PageError {
 }
 
 /// One entry of the page index.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct DocPage {
+    /// Such as `/documentation/search/filtering/`.
     pub path: String,
-    #[serde(default)]
     pub title: String,
-    #[serde(default)]
     pub description: String,
-    #[serde(default = "page_kind")]
     pub kind: String,
-    #[serde(default)]
     pub partition: String,
-    #[serde(default, deserialize_with = "any_number")]
     pub weight: i64,
-    #[serde(default)]
-    pub aliases: Option<Vec<String>>,
+    pub aliases: Vec<String>,
     pub date: Option<String>,
     pub lastmod: Option<String>,
     pub external_url: Option<String>,
     /// False for a section that only groups pages and has no page of its own.
-    #[serde(default = "yes")]
     pub rendered: bool,
-}
-
-fn page_kind() -> String {
-    "page".to_string()
-}
-
-fn yes() -> bool {
-    true
-}
-
-/// Hugo writes some weights as floats, such as `1000.0`.
-fn any_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
-    Ok(f64::deserialize(deserializer)? as i64)
 }
 
 impl DocPage {
     fn new(path: String, title: String) -> Self {
-        Self {
-            path,
+        Self::from(StoredPage {
+            page: page_key(&path),
             title,
-            description: String::new(),
-            kind: page_kind(),
-            partition: String::new(),
-            weight: 0,
-            aliases: None,
-            date: None,
-            lastmod: None,
-            external_url: None,
-            rendered: true,
-        }
+            meta: Default::default(),
+        })
     }
 
     pub fn source(&self) -> &str {
@@ -103,12 +76,37 @@ impl DocPage {
     }
 }
 
-pub struct Manifest {
+impl From<StoredPage> for DocPage {
+    fn from(stored: StoredPage) -> Self {
+        let meta = stored.meta;
+        Self {
+            path: site_path(&stored.page),
+            title: stored.title,
+            description: meta.description,
+            kind: meta.kind,
+            partition: meta.partition,
+            weight: meta.weight,
+            aliases: meta.aliases.iter().map(|a| site_path(a)).collect(),
+            date: meta.date,
+            lastmod: meta.lastmod,
+            external_url: meta.external_url,
+            rendered: meta.rendered,
+        }
+    }
+}
+
+/// A `page` payload value as a site path: `/documentation/search/`.
+fn site_path(page: &str) -> String {
+    format!("/{page}/")
+}
+
+/// The page index, by path and by old path.
+pub struct PageIndex {
     pub pages: HashMap<String, DocPage>,
     pub aliases: HashMap<String, String>,
 }
 
-impl Manifest {
+impl PageIndex {
     pub fn resolve<'a>(&'a self, path: &'a str) -> &'a str {
         self.aliases.get(path).map(String::as_str).unwrap_or(path)
     }
@@ -123,10 +121,8 @@ pub fn source_of(path: &str) -> &str {
 /// `/documentation/search/`.
 ///
 /// Paths that don't start with a known source, such as "search/hybrid-queries",
-/// are taken to be documentation paths. Only qdrant.tech and `extra_host` URLs
-/// are accepted, so a tool argument can never make the server fetch from
-/// another host.
-pub fn normalize_path(reference: &str, extra_host: Option<&str>) -> Result<String, String> {
+/// are taken to be documentation paths. Only qdrant.tech URLs are accepted.
+pub fn normalize_path(reference: &str) -> Result<String, String> {
     let reference = reference.trim();
     if reference.is_empty() {
         return Err("Empty page reference.".to_string());
@@ -142,7 +138,7 @@ pub fn normalize_path(reference: &str, extra_host: Option<&str>) -> Result<Strin
     .map_err(|e| format!("Not a valid page reference: {e}."))?;
 
     let host = url.host_str().unwrap_or_default();
-    if !PUBLIC_HOSTS.contains(&host) && Some(host) != extra_host {
+    if !PUBLIC_HOSTS.contains(&host) {
         return Err(format!("Only qdrant.tech pages can be read, not {host}."));
     }
 
@@ -188,10 +184,9 @@ pub fn strip_preamble(markdown: &str) -> String {
     format!("{}\n", lines[start..].join("\n").trim())
 }
 
-/// A section missing from the page index, as in the llms.txt fallback or a
-/// manifest from before unrendered sections were listed. Name it after its
-/// folder and place it with its first page.
-fn unlisted_section(manifest: &Manifest, path: &str) -> DocPage {
+/// A section missing from the page index. Name it after its folder and place
+/// it with its first page.
+fn unlisted_section(index: &PageIndex, path: &str) -> DocPage {
     let slug = path
         .trim_matches('/')
         .rsplit('/')
@@ -203,7 +198,7 @@ fn unlisted_section(manifest: &Manifest, path: &str) -> DocPage {
     }
     let mut page = DocPage::new(path.to_string(), title);
     page.kind = "section".to_string();
-    if let Some(first) = manifest
+    if let Some(first) = index
         .pages
         .values()
         .filter(|p| p.path.starts_with(path))
@@ -215,134 +210,69 @@ fn unlisted_section(manifest: &Manifest, path: &str) -> DocPage {
     page
 }
 
-pub struct SiteClient {
-    config: Config,
-    http: reqwest::Client,
-    base_host: Option<String>,
-    manifest: Mutex<Option<(Instant, Arc<Manifest>)>>,
+pub struct Library {
+    sources: Vec<String>,
+    backend: Backend,
+    index: Mutex<Option<(Instant, Arc<PageIndex>)>>,
 }
 
-impl SiteClient {
-    pub fn new(config: Config) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(config.http_timeout)
-            .user_agent(concat!("qdrant-docs-mcp/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("failed to build the HTTP client");
-        let base_host = Url::parse(&config.content_base_url)
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_string));
+impl Library {
+    pub fn new(config: Config, backend: Backend) -> Self {
         Self {
-            config,
-            http,
-            base_host,
-            manifest: Mutex::new(None),
+            sources: config.sources,
+            backend,
+            index: Mutex::new(None),
         }
     }
 
     pub fn url(&self, path: &str) -> String {
-        format!("{}{}", self.config.content_base_url, path)
+        format!("{SITE_URL}{path}")
     }
 
     pub fn sources(&self) -> &[String] {
-        &self.config.sources
+        &self.sources
     }
 
     pub fn normalize(&self, reference: &str) -> Result<String, String> {
-        let path = normalize_path(reference, self.base_host.as_deref())?;
-        check_enabled(&path, &self.config.sources)?;
+        let path = normalize_path(reference)?;
+        check_enabled(&path, &self.sources)?;
         Ok(path)
     }
 
-    // Manifest
+    // Page index
 
-    pub async fn manifest(&self) -> Result<Arc<Manifest>, String> {
+    pub async fn page_index(&self) -> Result<Arc<PageIndex>, String> {
         // Holding the lock while loading means concurrent requests wait for one
-        // fetch instead of each starting their own.
-        let mut cached = self.manifest.lock().await;
-        if let Some((loaded_at, manifest)) = cached.as_ref() {
-            if loaded_at.elapsed() < self.config.manifest_ttl {
-                return Ok(manifest.clone());
+        // read instead of each starting their own.
+        let mut cached = self.index.lock().await;
+        if let Some((loaded_at, index)) = cached.as_ref() {
+            if loaded_at.elapsed() < PAGE_INDEX_TTL {
+                return Ok(index.clone());
             }
         }
-        let manifest = Arc::new(
-            self.load_manifest()
-                .await
-                .map_err(|e| format!("Could not load the page index: {e}"))?,
-        );
-        *cached = Some((Instant::now(), manifest.clone()));
-        Ok(manifest)
+        let pages = self
+            .backend
+            .pages()
+            .await
+            .map_err(|e| format!("Could not load the page index: {e}"))?;
+        let index = Arc::new(self.build_index(pages));
+        *cached = Some((Instant::now(), index.clone()));
+        Ok(index)
     }
 
-    async fn load_manifest(&self) -> reqwest::Result<Manifest> {
-        let response = self
-            .http
-            .get(self.url("/docs-manifest.json"))
-            .send()
-            .await?;
-        if response.status() != reqwest::StatusCode::NOT_FOUND {
-            #[derive(Deserialize)]
-            struct ManifestFile {
-                pages: Vec<DocPage>,
-            }
-            let file: ManifestFile = response.error_for_status()?.json().await?;
-            return Ok(self.parse_manifest(file.pages));
-        }
-        // The manifest is new; sites built before it was added only have llms.txt.
-        let text = self
-            .http
-            .get(self.url("/llms.txt"))
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        Ok(self.parse_llms_txt(&text))
-    }
-
-    fn parse_manifest(&self, entries: Vec<DocPage>) -> Manifest {
+    fn build_index(&self, stored: Vec<StoredPage>) -> PageIndex {
         let mut pages = HashMap::new();
         let mut aliases = HashMap::new();
-        for page in entries {
-            if !self.config.sources.iter().any(|s| s == page.source()) {
+        for page in stored.into_iter().map(DocPage::from) {
+            if !self.sources.iter().any(|s| s == page.source()) {
                 continue;
             }
-            for alias in page.aliases.iter().flatten() {
-                aliases.insert(
-                    format!("{}/", alias.trim_end_matches('/')),
-                    page.path.clone(),
-                );
+            for alias in &page.aliases {
+                aliases.insert(alias.clone(), page.path.clone());
             }
             pages.insert(page.path.clone(), page);
         }
-        Manifest { pages, aliases }
-    }
-
-    fn parse_llms_txt(&self, text: &str) -> Manifest {
-        let mut pages = HashMap::new();
-        for line in text.lines() {
-            let Some(entry) = LLMS_ENTRY.captures(line.trim()) else {
-                continue;
-            };
-            let Ok(url) = Url::parse(&entry["url"]) else {
-                continue;
-            };
-            let path = url.path().trim_end_matches("index.md").to_string();
-            if !self.config.sources.iter().any(|s| s == source_of(&path)) {
-                continue;
-            }
-            let mut page = DocPage::new(path.clone(), entry["title"].to_string());
-            page.description = entry
-                .name("description")
-                .map(|d| d.as_str().trim().to_string())
-                .unwrap_or_default();
-            page.weight = pages.len() as i64;
-            pages.insert(path, page);
-        }
-        Manifest {
-            pages,
-            aliases: HashMap::new(),
-        }
+        PageIndex { pages, aliases }
     }
 
     // Tools
@@ -353,9 +283,16 @@ impl SiteClient {
         reference: &str,
     ) -> Result<(Option<DocPage>, String, String), PageError> {
         let path = self.normalize(reference)?;
-        let manifest = self.manifest().await?;
-        let path = manifest.resolve(&path).to_string();
-        let page = manifest.pages.get(&path).cloned();
+        // One filtered query rather than the cached page index, so a page is
+        // readable as soon as it's indexed.
+        let page = self
+            .backend
+            .find_page(&page_key(&path))
+            .await
+            .map_err(|e| PageError::Other(format!("Could not look up the page: {e}")))?
+            .map(DocPage::from)
+            .filter(|page| self.sources.iter().any(|s| s == page.source()));
+        let path = page.as_ref().map_or(path, |page| page.path.clone());
         if let Some(page) = &page {
             if !page.rendered {
                 return Err(PageError::Other(format!(
@@ -370,31 +307,32 @@ impl SiteClient {
                 )));
             }
         }
-        let fetch_error =
-            |e: reqwest::Error| PageError::Other(format!("Could not fetch the page: {e}"));
-        let response = self
-            .http
-            .get(self.url(&format!("{path}index.md")))
-            .send()
+        let body = self
+            .backend
+            .page_markdown(&page_key(&path))
             .await
-            .map_err(fetch_error)?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(PageError::NotFound(path));
-        }
-        let body = response
-            .error_for_status()
-            .map_err(fetch_error)?
-            .text()
-            .await
-            .map_err(fetch_error)?;
+            .map_err(|e| PageError::Other(format!("Could not read the page: {e}")))?;
+        let body = match (body, &page) {
+            (Some(body), _) => body,
+            // `pages` and `sections` are indexed separately, so a listed page
+            // can be missing from `sections` for a while, such as during the
+            // nightly indexing.
+            (None, Some(page)) => {
+                return Err(PageError::Other(format!(
+                    "{} ({path}) exists but can't be read right now. Try again later.",
+                    page.title
+                )))
+            }
+            (None, None) => return Err(PageError::NotFound(path)),
+        };
         Ok((page, self.url(&path), strip_preamble(&body)))
     }
 
     /// Top-level documentation sections, then each other source, with page counts.
     pub async fn list_sections(&self) -> Result<Vec<(DocPage, usize)>, String> {
-        let manifest = self.manifest().await?;
+        let index = self.page_index().await?;
         let mut counts: HashMap<String, usize> = HashMap::new();
-        for path in manifest.pages.keys() {
+        for path in index.pages.keys() {
             let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
             let top = if segments[0] == "documentation" {
                 if segments.len() < 2 {
@@ -416,11 +354,11 @@ impl SiteClient {
         let mut sections: Vec<(DocPage, usize)> = counts
             .into_iter()
             .map(|(path, count)| {
-                let page = manifest
+                let page = index
                     .pages
                     .get(&path)
                     .cloned()
-                    .unwrap_or_else(|| unlisted_section(&manifest, &path));
+                    .unwrap_or_else(|| unlisted_section(&index, &path));
                 (page, count)
             })
             .collect();
@@ -438,8 +376,8 @@ impl SiteClient {
     /// flat (newest first).
     pub async fn list_pages(&self, section: &str) -> Result<(Vec<DocPage>, bool), String> {
         let prefix = self.normalize(section)?;
-        let manifest = self.manifest().await?;
-        let mut pages: Vec<DocPage> = manifest
+        let index = self.page_index().await?;
+        let mut pages: Vec<DocPage> = index
             .pages
             .values()
             .filter(|p| p.path.starts_with(&prefix))
@@ -464,7 +402,7 @@ impl SiteClient {
             (1..=segments.len())
                 .map(|i| {
                     let ancestor = format!("/{}/", segments[..i].join("/"));
-                    let weight = manifest.pages.get(&ancestor).map(|p| p.weight).unwrap_or(0);
+                    let weight = index.pages.get(&ancestor).map(|p| p.weight).unwrap_or(0);
                     (weight, segments[i - 1].to_string())
                 })
                 .collect()
@@ -496,19 +434,14 @@ mod tests {
             ),
             ("https://qdrant.tech/blog//x", "/blog/x/"),
         ] {
-            assert_eq!(
-                normalize_path(reference, None).unwrap(),
-                expected,
-                "{reference}"
-            );
+            assert_eq!(normalize_path(reference).unwrap(), expected, "{reference}");
         }
     }
 
     #[test]
     fn rejects_other_hosts() {
-        let error = normalize_path("https://example.com/documentation/", None).unwrap_err();
+        let error = normalize_path("https://example.com/documentation/").unwrap_err();
         assert!(error.contains("not example.com"), "{error}");
-        assert!(normalize_path("http://localhost:1313/blog/", Some("localhost")).is_ok());
     }
 
     #[test]

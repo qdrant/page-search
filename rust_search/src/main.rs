@@ -4,7 +4,7 @@ use actix_cors::Cors;
 use actix_web::{main, middleware, web::Data, App, HttpServer};
 use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
 use rust_search::admin::{AdminConfig, AdminPanel, ReplayTarget};
-use rust_search::docs_mcp::{config::Config, DocsServer, SearchBackend};
+use rust_search::docs_mcp::{config::Config, Backend, DocsServer};
 use rust_search::embedding::QueryEncoder;
 use rust_search::request_log::{self, ReplayToken, RequestLog};
 use rust_search::{search, sections, skills, snippets};
@@ -47,7 +47,7 @@ async fn main() -> std::io::Result<()> {
     );
     let docs_mcp = DocsServer::new(
         docs_config,
-        SearchBackend::Qdrant {
+        Backend::Qdrant {
             client: qdrant.clone(),
             encoder: encoder.clone(),
         },

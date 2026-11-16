@@ -18,8 +18,9 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, Ser
 use serde::{Deserialize, Serialize};
 
 use super::config::Config;
-use super::site::{check_enabled, normalize_path, source_of, DocPage, PageError, SiteClient};
+use super::library::{check_enabled, normalize_path, source_of, DocPage, Library, PageError};
 use crate::embedding::QueryEncoder;
+use crate::pages::{self, StoredPage};
 use crate::similar_paths::suggest;
 use crate::snippets::Snippet;
 use crate::{search, snippets};
@@ -50,8 +51,8 @@ release they describe.
 Typical flow: search_docs to find the relevant pages, then get_page to read
 them in full. Use list_docs to browse when search terms are unclear, and
 search_snippets to find code examples in a given language. Documentation
-pages link to full snippet pages with the same example in every client
-language; get_page reads those too. Cite the page URLs you relied on.
+pages usually show an example in one language; search_snippets has it in
+every client language. Cite the page URLs you relied on.
 ";
 
 /// A part of qdrant.tech that can be searched.
@@ -331,32 +332,63 @@ fn clean_title(title: &str) -> String {
         .to_string()
 }
 
-/// Where `search_docs` gets its results.
+/// Where the server gets search results, the page index, and pages.
 #[derive(Clone)]
-pub enum SearchBackend {
-    /// The `site` collection, queried the same way as `/api/search`.
+pub enum Backend {
+    /// Qdrant: search the `site` collection the same way as `/api/search`,
+    /// and read pages from the `pages` and `sections` collections.
     Qdrant {
         client: Arc<Qdrant>,
         encoder: QueryEncoder,
     },
-    /// Canned results per source, recording each request.
+    /// Canned results and pages, recording each search request.
     #[cfg(test)]
-    Fixed(Arc<tests::FixedSearch>),
+    Fixed(Arc<tests::FixedBackend>),
+}
+
+impl Backend {
+    /// Every page of the page index.
+    pub async fn pages(&self) -> anyhow::Result<Vec<StoredPage>> {
+        match self {
+            Self::Qdrant { client, .. } => pages::all_pages(client).await,
+            #[cfg(test)]
+            Self::Fixed(fixed) => Ok(fixed.pages.clone()),
+        }
+    }
+
+    /// The page at a path, written like the `page` payload field, or the page
+    /// that has it as an old path.
+    pub async fn find_page(&self, page: &str) -> anyhow::Result<Option<StoredPage>> {
+        match self {
+            Self::Qdrant { client, .. } => pages::find_page(client, page).await,
+            #[cfg(test)]
+            Self::Fixed(fixed) => Ok(fixed.find_page(page)),
+        }
+    }
+
+    /// The Markdown of a page, written like the `page` payload field.
+    pub async fn page_markdown(&self, page: &str) -> anyhow::Result<Option<String>> {
+        match self {
+            Self::Qdrant { client, .. } => pages::page_markdown(client, page).await,
+            #[cfg(test)]
+            Self::Fixed(fixed) => Ok(fixed.page_markdown(page)),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct DocsServer {
-    search: SearchBackend,
-    site: Arc<SiteClient>,
+    backend: Backend,
+    library: Arc<Library>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl DocsServer {
-    pub fn new(config: Config, search: SearchBackend) -> Self {
+    pub fn new(config: Config, backend: Backend) -> Self {
         Self {
-            search,
-            site: Arc::new(SiteClient::new(config)),
+            library: Arc::new(Library::new(config, backend.clone())),
+            backend,
             tool_router: Self::tool_router(),
         }
     }
@@ -380,11 +412,11 @@ impl DocsServer {
         }
         if let Some(requested) = &args.sources {
             for source in requested {
-                check_enabled(&format!("/{}/", source.as_str()), self.site.sources())?;
+                check_enabled(&format!("/{}/", source.as_str()), self.library.sources())?;
             }
         }
         // The requested or else all served sources, in the canonical order.
-        let served = |s: &Source| self.site.sources().iter().any(|e| e == s.as_str());
+        let served = |s: &Source| self.library.sources().iter().any(|e| e == s.as_str());
         let sources: Vec<Source> = Source::ALL
             .into_iter()
             .filter(|s| served(s) && args.sources.as_ref().is_none_or(|r| r.contains(s)))
@@ -443,7 +475,7 @@ impl DocsServer {
 
     /// Find code examples in Qdrant content: the documentation, articles, the blog, and courses.
     ///
-    /// Each result is a code snippet with a description of what it does and the page it is on. Pass a language to get examples for one client. Documentation pages usually show an example in one language and link to a full snippet page with it in every client language; read that with get_page.
+    /// Each result is a code snippet with a description of what it does and the page it is on. Pass a language to get examples for one client. Documentation pages usually show an example in one language; this tool has it in every client language.
     #[tool(annotations(
         read_only_hint = true,
         destructive_hint = false,
@@ -466,24 +498,24 @@ impl DocsServer {
         let limit = args.limit.clamp(1, 20) as usize;
         // Ask for more than needed: the same code can be on several pages,
         // and some pages may be in sources this server doesn't serve.
-        let found: Vec<Snippet> = match &self.search {
-            SearchBackend::Qdrant { client, .. } => {
+        let found: Vec<Snippet> = match &self.backend {
+            Backend::Qdrant { client, .. } => {
                 snippets::search_snippets(client, query, language.as_deref(), limit as u64 * 2)
                     .await
                     .map_err(|e| format!("Snippet search is unavailable: {e}"))?
             }
             #[cfg(test)]
-            SearchBackend::Fixed(fixed) => fixed.search_snippets(language.as_deref()),
+            Backend::Fixed(fixed) => fixed.search_snippets(language.as_deref()),
         };
 
         // Titles are a nicety: search still works if the page index doesn't load.
-        let manifest = self.site.manifest().await.ok();
+        let index = self.library.page_index().await.ok();
         let mut hits: Vec<SnippetHit> = Vec::new();
         for snippet in found {
-            let Ok(path) = normalize_path(&snippet.source.url, None) else {
+            let Ok(path) = normalize_path(&snippet.source.url) else {
                 continue;
             };
-            let served = self.site.sources().iter().any(|s| s == source_of(&path));
+            let served = self.library.sources().iter().any(|s| s == source_of(&path));
             let code = snippet.code.trim_end().to_string();
             let repeated = hits
                 .iter()
@@ -491,9 +523,9 @@ impl DocsServer {
             if !served || repeated {
                 continue;
             }
-            let title = manifest
+            let title = index
                 .as_ref()
-                .and_then(|m| m.pages.get(m.resolve(&path)))
+                .and_then(|i| i.pages.get(i.resolve(&path)))
                 .map(|page| page.title.clone())
                 .unwrap_or_default();
             hits.push(SnippetHit {
@@ -501,7 +533,7 @@ impl DocsServer {
                 code,
                 description: snippet.description.map(|d| d.trim().to_string()),
                 title,
-                url: self.site.url(&path),
+                url: self.library.url(&path),
             });
             if hits.len() == limit {
                 break;
@@ -524,7 +556,7 @@ impl DocsServer {
         open_world_hint = true
     ))]
     async fn get_page(&self, Parameters(args): Parameters<GetPageArgs>) -> Result<String, String> {
-        let (entry, url, body) = match self.site.get_page(&args.page).await {
+        let (entry, url, body) = match self.library.get_page(&args.page).await {
             Ok(page) => page,
             Err(PageError::NotFound(path)) => return Err(self.not_found(&path).await),
             Err(PageError::Other(message)) => return Err(message),
@@ -565,7 +597,7 @@ impl DocsServer {
         let section = args.section.as_deref().unwrap_or_default();
         if matches!(section.trim_matches('/'), "" | "documentation") {
             let sections = self
-                .site
+                .library
                 .list_sections()
                 .await?
                 .into_iter()
@@ -584,7 +616,7 @@ impl DocsServer {
             return respond(args.format, &SectionList { sections }, sections_markdown);
         }
 
-        let (pages, nested) = self.site.list_pages(section).await?;
+        let (pages, nested) = self.library.list_pages(section).await?;
         let total = pages.len();
         if args.offset >= total {
             return Err(format!(
@@ -615,7 +647,7 @@ impl DocsServer {
             })
             .collect();
         let list = PageList {
-            section: self.site.normalize(section)?,
+            section: self.library.normalize(section)?,
             total,
             offset: args.offset,
             pages: entries,
@@ -847,24 +879,24 @@ impl DocsServer {
     /// Error for a missing page: existing pages that resemble it.
     async fn not_found(&self, path: &str) -> String {
         let page = path.trim_matches('/');
-        let similar = match &self.search {
-            SearchBackend::Qdrant { client, encoder } => {
+        let similar = match &self.backend {
+            Backend::Qdrant { client, encoder } => {
                 suggest(
                     client.as_ref(),
                     Some(encoder),
                     page,
-                    self.site.sources(),
+                    self.library.sources(),
                     MAX_SUGGESTIONS,
                 )
                 .await
             }
             #[cfg(test)]
-            SearchBackend::Fixed(fixed) => {
+            Backend::Fixed(fixed) => {
                 suggest(
-                    &fixed.pages,
+                    &fixed.similar,
                     None,
                     page,
-                    self.site.sources(),
+                    self.library.sources(),
                     MAX_SUGGESTIONS,
                 )
                 .await
@@ -872,18 +904,18 @@ impl DocsServer {
         };
         // The page index hides pages that aren't readable here; it's a
         // nicety, so suggestions still work if it doesn't load.
-        let manifest = self.site.manifest().await.ok();
+        let index = self.library.page_index().await.ok();
         let mut suggestions: Vec<(String, String)> = Vec::new();
         match similar {
             Ok(pages) => {
                 for suggestion in pages {
                     let page = format!("/{}/", suggestion.page);
-                    let entry = manifest.as_ref().and_then(|m| m.pages.get(&page));
+                    let entry = index.as_ref().and_then(|i| i.pages.get(&page));
                     if entry.is_some_and(|e| !e.rendered || e.external_url.is_some()) {
                         continue;
                     }
                     let title = entry.map_or(suggestion.title, |e| e.title.clone());
-                    suggestions.push((title, self.site.url(&page)));
+                    suggestions.push((title, self.library.url(&page)));
                 }
             }
             Err(e) => log::warn!("No suggestions from the page index: {e}"),
@@ -925,8 +957,8 @@ impl DocsServer {
             Some(p) if source == "documentation" => vec![p.as_str().to_string()],
             _ => vec![],
         };
-        let points: Vec<ScoredPoint> = match &self.search {
-            SearchBackend::Qdrant { client, encoder } => search::search(
+        let points: Vec<ScoredPoint> = match &self.backend {
+            Backend::Qdrant { client, encoder } => search::search(
                 client,
                 encoder,
                 query,
@@ -937,7 +969,7 @@ impl DocsServer {
             .await
             .map_err(|e| format!("Search is unavailable: {e}"))?,
             #[cfg(test)]
-            SearchBackend::Fixed(fixed) => fixed.search(source, &partitions),
+            Backend::Fixed(fixed) => fixed.search(source, &partitions),
         };
 
         Ok(points
@@ -953,8 +985,8 @@ impl DocsServer {
                         .map(|t| clean_title(&t))
                         .unwrap_or_default(),
                     partition: payload_str(&point.payload, "partition").unwrap_or_default(),
-                    url: self.site.url(&path),
-                    markdown_url: self.site.url(&format!("{path}index.md")),
+                    url: self.library.url(&path),
+                    markdown_url: self.library.url(&format!("{path}index.md")),
                 };
                 let text = payload_str(&point.payload, "text")
                     .unwrap_or_default()
@@ -974,11 +1006,13 @@ impl ServerHandler for DocsServer {
                 Implementation::new("qdrant-docs", env!("CARGO_PKG_VERSION"))
                     .with_title("Qdrant Documentation"),
             )
-            .with_instructions(INSTRUCTIONS.replace("{sources}", &source_list(self.site.sources())))
+            .with_instructions(
+                INSTRUCTIONS.replace("{sources}", &source_list(self.library.sources())),
+            )
     }
 
     /// Adds the site structure to the instructions. It comes from the page
-    /// index, which needs a fetch, so it can't be part of `get_info`.
+    /// index, which is read from Qdrant, so it can't be part of `get_info`.
     async fn initialize(
         &self,
         request: InitializeRequestParams,
@@ -986,7 +1020,7 @@ impl ServerHandler for DocsServer {
     ) -> Result<InitializeResult, ErrorData> {
         context.peer.set_peer_info(request.clone());
         let mut info = self.negotiate_initialize(&request)?;
-        let sections = self.site.list_sections().await.unwrap_or_else(|e| {
+        let sections = self.library.list_sections().await.unwrap_or_else(|e| {
             log::warn!("Instructions without the section list: {e}");
             vec![]
         });

@@ -56,16 +56,19 @@ It has four read-only tools:
 |---|---|
 | `search_docs(query, sources?, partition?, limit?, format?)` | Searches the `site` collection the same way as `/api/search`, one query per source, and returns one result per page with the headings and passages that matched |
 | `search_snippets(query, language?, limit?, format?)` | Searches the `snippet-search` collection the same way as `/snippets/search`, with the language optional, and returns code examples with their descriptions and pages |
-| `get_page(page)` | Returns a page's Markdown from `<page>/index.md` on the site, resolving old URLs through the page index. Also reads the full snippet pages under `/documentation/snippets/`. For a missing page, suggests existing ones |
+| `get_page(page)` | Returns a page's Markdown, put together from its sections in the `sections` collection, resolving old URLs through the page index. For a missing page, suggests existing ones |
 | `list_docs(section?, offset?, limit?, format?)` | Browses the page index: docs and courses in sidebar order, articles and blog posts newest first |
 
 Tools answer in Markdown by default. `format: "json"` returns the same result
 as JSON, in both the text and the structured content. `get_page` returns
 Markdown only. New tools should offer both formats where a JSON form makes sense.
 
-Pages and the page index (`/docs-manifest.json`, built by the landing_page
-repository) are fetched from the site, not from Qdrant. Only the two search tools
-and the suggestions for missing pages use Qdrant.
+Everything comes from Qdrant; the server makes no requests to the site.
+`get_page` finds the page, or the page an old URL moved to, with a filtered
+query on the `page` and `aliases` fields of `pages`, and reads it from
+`sections`. `list_docs` and the titles in results read all of `pages` at most
+every 5 minutes. So what agents read is what was last indexed, the same as
+what they search.
 
 ## Suggestions for missing pages
 
@@ -97,8 +100,8 @@ collections. It encodes pages with the same code as the queries, `page_point`
 in `src/similar_paths.rs`, and embeds `meaning` like queries, as
 `QUERY_EMBEDDING` says: Qdrant Cloud embeds it on upsert by default.
 
-It stores what the page index says about each page, so the service won't need
-to read the page index from the site. `index_pages` is the only part of this
+It stores what the page index says about each page, so the service doesn't
+read the page index from the site. `index_pages` is the only part of this
 project that reads it. The payload of a page (`PageMeta` in `src/pages.rs`):
 
 | Field | Index | |
@@ -131,9 +134,6 @@ Settings, from the environment, in addition to the service's own:
 |---|---|---|
 | `MCP_ALLOWED_HOSTS` | `search.qdrant.tech,localhost,127.0.0.1` | `Host` values `/mcp` accepts; others get 403 |
 | `DOCS_MCP_SOURCES` | all four | Comma-separated subset of `documentation,articles,blog,course` to serve. `deploy.yml` sets all four |
-| `DOCS_MCP_BASE_URL` | `https://qdrant.tech` | Where pages are read from, such as a local `hugo serve` |
-| `DOCS_MCP_MANIFEST_TTL` | `300` | Seconds to cache the page index |
-| `DOCS_MCP_HTTP_TIMEOUT` | `15` | Seconds to wait for the site |
 | `QUERY_EMBEDDING` | `cloud` | `local` embeds queries in-process, see below |
 
 ### Testing locally
@@ -147,6 +147,7 @@ applies to `/api/search` and `/md` as well as `/mcp`.
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 -v page-search-qdrant:/qdrant/storage qdrant/qdrant
 # Index the `site` and `sections` collections with the Python tools in ../site_search
+# (see ../dev-docs.md), then build `pages` from them:
 QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
   cargo run --release --features local-embeddings --bin index_pages
 
@@ -157,7 +158,7 @@ QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
 Then connect a client to `http://localhost:8005/mcp`, for example
 `claude mcp add --transport http qdrant-docs http://localhost:8005/mcp`.
 
-`cargo test` runs the tools in-process against a fake site and canned search
+`cargo test` runs the tools in-process against fixed pages and canned search
 results, without Qdrant or network access.
 
 ## Admin panel

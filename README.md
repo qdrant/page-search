@@ -18,8 +18,8 @@ It has two parts:
 |---|---|---|
 | `site` | `site_search.crawl`, then `site_search.encode` | `/api/search`, `search_docs` |
 | `prefix-cache` | `index_prefix` (once, from `words.txt`) | `/api/search` for short queries |
-| `sections` | `site_search.sections` | `/md`, `get_page` suggestions |
-| `pages` | `index_pages`, from `/docs-manifest.json` | Suggestions for missing pages |
+| `sections` | `site_search.sections` | `/md`, `get_page` |
+| `pages` | `index_pages`, from `/docs-manifest.json` | `list_docs`, page titles and old URLs, suggestions for missing pages |
 | `skills` | `site_search.skills` | `/skills` |
 | `snippet-search` | `site_search.snippets` | `/snippets/search`, `search_snippets` |
 
