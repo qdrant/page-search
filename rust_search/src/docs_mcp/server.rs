@@ -22,7 +22,7 @@ use super::library::{check_enabled, normalize_path, source_of, DocPage, Library,
 use crate::embedding::QueryEncoder;
 use crate::pages::{self, StoredPage};
 use crate::similar_paths::suggest;
-use crate::snippets::Snippet;
+use crate::snippets::{normalize_language, Snippet};
 use crate::{search, snippets};
 
 fn source_description(source: &str) -> &'static str {
@@ -776,24 +776,6 @@ fn snippets_markdown(results: &SnippetResults) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-/// Spell a language the way the snippet index does, accepting common
-/// abbreviations.
-fn normalize_language(language: &str) -> String {
-    let language = language.trim().to_lowercase();
-    match language.as_str() {
-        "py" => "python",
-        "ts" => "typescript",
-        "js" | "jsx" => "javascript",
-        "rs" => "rust",
-        "c#" | "cs" | "dotnet" | ".net" => "csharp",
-        "golang" => "go",
-        "rest" | "http request" => "http",
-        "bash" | "sh" | "console" | "env" => "shell",
-        other => other,
-    }
-    .to_string()
 }
 
 fn source_list(sources: &[String]) -> String {

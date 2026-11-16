@@ -10,6 +10,7 @@ use futures::StreamExt;
 use serde_json::Value;
 
 use super::store::{now_ms, RequestLog, RequestRecord};
+use super::{MCP_SNIPPETS_ENDPOINT, SNIPPETS_ENDPOINT};
 
 /// Largest MCP request body the log reads; bigger ones are refused.
 const MAX_MCP_BODY: usize = 1 << 20;
@@ -81,6 +82,37 @@ fn classify(
     }
 }
 
+/// The language a snippet search asked for: `Some("")` for one without a
+/// language, `None` for other requests.
+pub(crate) fn snippet_language(
+    endpoint: &str,
+    query_string: &str,
+    body: Option<&[u8]>,
+) -> Option<String> {
+    match endpoint {
+        SNIPPETS_ENDPOINT => Some(
+            url::form_urlencoded::parse(query_string.as_bytes())
+                .find(|(k, _)| k == "language")
+                .map(|(_, v)| v.trim().to_string())
+                .unwrap_or_default(),
+        ),
+        MCP_SNIPPETS_ENDPOINT => {
+            let json: Option<Value> = body.and_then(|b| serde_json::from_slice(b).ok());
+            let message = json
+                .as_ref()
+                .map(|j| j.as_array().and_then(|a| a.first()).unwrap_or(j));
+            Some(
+                message
+                    .and_then(|m| m.pointer("/params/arguments/language"))
+                    .and_then(Value::as_str)
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default(),
+            )
+        }
+        _ => None,
+    }
+}
+
 /// Middleware recording every API and MCP request in the request log.
 pub async fn log_requests(
     mut req: ServiceRequest,
@@ -132,6 +164,7 @@ pub async fn log_requests(
         return Ok(next.call(req).await?.map_into_left_body());
     };
 
+    let language = snippet_language(&endpoint, &query_string, body.as_deref());
     let response = next.call(req).await?;
     log.record(RequestRecord {
         id: 0,
@@ -145,6 +178,7 @@ pub async fn log_requests(
         status: response.status().as_u16(),
         duration_ms: start.elapsed().as_secs_f64() * 1000.0,
         user_agent,
+        language,
     });
     Ok(response.map_into_left_body())
 }
@@ -175,6 +209,29 @@ mod tests {
         );
         assert_eq!(classify(&get, "/favicon.ico", "", None), None);
         assert_eq!(classify(&get, "/admin", "", None), None);
+    }
+
+    #[test]
+    fn reads_snippet_languages() {
+        assert_eq!(
+            snippet_language("snippets", "query=upsert&language=Python%20", None),
+            Some("Python".into())
+        );
+        assert_eq!(
+            snippet_language("snippets", "query=upsert", None),
+            Some("".into())
+        );
+        let call = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_snippets","arguments":{"query":"upsert","language":"ts"}}}"#;
+        assert_eq!(
+            snippet_language("mcp:search_snippets", "", Some(call)),
+            Some("ts".into())
+        );
+        let call = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_snippets","arguments":{"query":"upsert"}}}"#;
+        assert_eq!(
+            snippet_language("mcp:search_snippets", "", Some(call)),
+            Some("".into())
+        );
+        assert_eq!(snippet_language("search", "language=python", None), None);
     }
 
     #[test]

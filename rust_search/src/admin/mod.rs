@@ -1,5 +1,8 @@
 //! The admin panel at `/admin`: request statistics from the request log, and
 //! replays of logged requests to show what the service returns for them now.
+//! Its snippet view reports on snippet searches and runs them with each half
+//! of the hybrid search shown on its own, with the Qdrant client the app
+//! shares, if there is one.
 //! Google accounts on the allow lists sign in with OAuth.
 
 mod api;
@@ -73,7 +76,13 @@ impl AdminPanel {
                 .service(api::top)
                 .service(api::requests)
                 .service(api::request_detail)
-                .service(api::replay),
+                .service(api::replay)
+                .service(api::snippet_stats)
+                .service(api::snippet_languages)
+                .service(api::snippet_top)
+                .service(api::snippet_requests)
+                .service(api::snippet_index)
+                .service(api::snippet_search),
         );
     }
 
