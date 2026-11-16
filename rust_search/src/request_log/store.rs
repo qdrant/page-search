@@ -4,6 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OpenFlags};
 
+use super::category::{categorize, Category, Request, CATEGORY_VERSION};
 use super::middleware::snippet_language;
 use super::{MCP_SNIPPETS_ENDPOINT, SNIPPETS_ENDPOINT};
 
@@ -25,7 +26,9 @@ CREATE TABLE IF NOT EXISTS requests (
     status INTEGER NOT NULL,
     duration_ms REAL NOT NULL,
     user_agent TEXT,
-    language TEXT
+    language TEXT,
+    rpc_error TEXT,
+    category TEXT NOT NULL DEFAULT 'use'
 );
 CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts);
 CREATE INDEX IF NOT EXISTS requests_endpoint_ts ON requests(endpoint, ts);
@@ -33,13 +36,63 @@ CREATE INDEX IF NOT EXISTS requests_endpoint_ts ON requests(endpoint, ts);
 
 /// Brings a log written by an older version up to [`SCHEMA`].
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let has_language = conn
-        .prepare("SELECT 1 FROM pragma_table_info('requests') WHERE name = 'language'")?
-        .exists([])?;
-    if !has_language {
-        conn.execute_batch("ALTER TABLE requests ADD COLUMN language TEXT")?;
+    for (column, definition) in [
+        ("language", "TEXT"),
+        ("rpc_error", "TEXT"),
+        ("category", "TEXT NOT NULL DEFAULT 'use'"),
+    ] {
+        let exists = conn
+            .prepare("SELECT 1 FROM pragma_table_info('requests') WHERE name = ?1")?
+            .exists([column])?;
+        if !exists {
+            conn.execute_batch(&format!(
+                "ALTER TABLE requests ADD COLUMN {column} {definition}"
+            ))?;
+        }
     }
-    backfill_languages(conn)
+    backfill_languages(conn)?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version < CATEGORY_VERSION {
+        recategorize(conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {CATEGORY_VERSION}"))?;
+    }
+    Ok(())
+}
+
+/// Categorizes every request again, for a log written before the current
+/// [`categorize`].
+fn recategorize(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let mut changed = 0;
+    {
+        let mut select = tx.prepare(
+            "SELECT id, endpoint, path, query_string, query, user_agent, rpc_error, category
+             FROM requests",
+        )?;
+        let mut update = tx.prepare("UPDATE requests SET category = ?1 WHERE id = ?2")?;
+        let mut rows = select.query([])?;
+        while let Some(row) = rows.next()? {
+            let (endpoint, path, query_string): (String, String, String) =
+                (row.get(1)?, row.get(2)?, row.get(3)?);
+            let (query, user_agent, rpc_error): (Option<String>, Option<String>, Option<String>) =
+                (row.get(4)?, row.get(5)?, row.get(6)?);
+            let category = categorize(&Request {
+                endpoint: &endpoint,
+                path: &path,
+                query_string: &query_string,
+                query: query.as_deref(),
+                user_agent: user_agent.as_deref(),
+                rpc_error: rpc_error.as_deref(),
+            });
+            if row.get::<_, String>(7)? != category.as_str() {
+                update.execute(params![category.as_str(), row.get::<_, i64>(0)?])?;
+                changed += 1;
+            }
+        }
+    }
+    tx.commit()?;
+    log::info!("Categorized the request log again: {changed} requests changed");
+    Ok(())
 }
 
 /// Fills in the language of snippet searches logged before it was kept.
@@ -99,6 +152,10 @@ pub struct RequestRecord {
     /// The language a snippet search asked for, empty for none.
     /// `None` for other requests.
     pub language: Option<String>,
+    /// For MCP: the JSON-RPC error, such as `-32602 tool not found`, or the
+    /// tool's own error, as `tool error: ...`. The HTTP status is 200 either way.
+    pub rpc_error: Option<String>,
+    pub category: Category,
 }
 
 pub fn now_ms() -> i64 {
@@ -182,8 +239,8 @@ fn insert(conn: &mut Connection, batch: &[RequestRecord]) -> rusqlite::Result<()
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT INTO requests (ts, endpoint, query, method, path, query_string, body, status, duration_ms, user_agent, language)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO requests (ts, endpoint, query, method, path, query_string, body, status, duration_ms, user_agent, language, rpc_error, category)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
         for r in batch {
             stmt.execute(params![
@@ -198,6 +255,8 @@ fn insert(conn: &mut Connection, batch: &[RequestRecord]) -> rusqlite::Result<()
                 r.duration_ms,
                 r.user_agent,
                 r.language,
+                r.rpc_error,
+                r.category.as_str(),
             ])?;
         }
     }
@@ -227,6 +286,13 @@ pub(crate) fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<RequestReco
         duration_ms: row.get("duration_ms")?,
         user_agent: row.get("user_agent")?,
         language: row.get("language")?,
+        rpc_error: row.get("rpc_error")?,
+        category: match row.get::<_, String>("category")?.as_str() {
+            "protocol" => Category::Protocol,
+            "unknown" => Category::Unknown,
+            "scanner" => Category::Scanner,
+            _ => Category::Use,
+        },
     })
 }
 
@@ -249,7 +315,10 @@ mod tests {
                     (1, 'snippets', 'upsert', 'GET', '/snippets/search', 'query=upsert&language=rust', NULL, 200, 1),
                     (2, 'mcp:search_snippets', 'upsert', 'POST', '/mcp', '',
                      '{\"method\":\"tools/call\",\"params\":{\"name\":\"search_snippets\",\"arguments\":{\"query\":\"upsert\"}}}', 200, 1),
-                    (3, 'search', 'upsert', 'GET', '/api/search', 'q=upsert', NULL, 200, 1);",
+                    (3, 'search', 'upsert', 'GET', '/api/search', 'q=upsert', NULL, 200, 1),
+                    (4, 'mcp:search', 'upsert', 'POST', '/mcp', '', NULL, 200, 1),
+                    (5, 'mcp:tools/list', NULL, 'POST', '/mcp', '', NULL, 200, 1),
+                    (6, 'md', '/.env', 'GET', '/md/.env', '', NULL, 404, 1);",
             )
             .unwrap();
         }
@@ -265,7 +334,23 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(languages, [Some("rust".into()), Some("".into()), None]);
+        assert_eq!(
+            languages,
+            [Some("rust".into()), Some("".into()), None, None, None, None]
+        );
+        let categories: Vec<String> = log
+            .reader()
+            .unwrap()
+            .prepare("SELECT category FROM requests ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            categories,
+            ["use", "use", "use", "unknown", "protocol", "scanner"]
+        );
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }

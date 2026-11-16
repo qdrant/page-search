@@ -393,6 +393,15 @@ impl DocsServer {
         }
     }
 
+    /// The names of the tools this server has, such as `search_docs`.
+    pub fn tool_names() -> Vec<String> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
     /// Search Qdrant content on qdrant.tech: the documentation, articles, the blog, and courses.
     ///
     /// Each result is a page, with its source and the headings or passages on it that matched. Read the page with get_page before relying on it: matches are short excerpts.
@@ -1016,4 +1025,4 @@ impl ServerHandler for DocsServer {
 
 #[cfg(test)]
 #[path = "tests.rs"]
-mod tests;
+pub(crate) mod tests;

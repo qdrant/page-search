@@ -175,6 +175,10 @@ h3 { font-size: 13px; margin: 0 0 8px; display: flex; gap: 8px; align-items: cen
 h3 .meta { color: var(--ink-2); font-weight: 400; }
 .err { color: var(--critical); }
 .tabs { display: flex; gap: 4px; }
+.toolbar label { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-2); }
+.toolbar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 4px; }
+.cat { margin-left: 6px; vertical-align: 1px; }
+.rpc-err { display: block; color: var(--critical); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
 .tabs button { border-color: transparent; background: transparent; color: var(--ink-2); }
 .tabs button[aria-selected="true"] { background: var(--hover); color: var(--ink); border-color: var(--border); font-weight: 600; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -267,12 +271,18 @@ th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
       <button data-days="30">30 days</button>
       <button data-days="90">90 days</button>
     </div>
-    <span class="note">Days are in UTC. Requests are kept for 90 days.</span>
+    <span class="sep" aria-hidden="true"></span>
+    <label title="MCP sessions and discovery: initialize, tools/list, ping, GET /mcp, and the like"><input type="checkbox" id="hide-protocol"> Hide protocol requests</label>
+    <label title="Calls to MCP tools or methods the server doesn't have, and scanners probing for weaknesses"><input type="checkbox" id="hide-noise"> Hide noise</label>
+    <span class="sep" aria-hidden="true"></span>
+    <label title="HTTP errors, and MCP calls answered with an error"><input type="checkbox" id="errors-only"> Only errors</label>
+    <span class="note" id="traffic-note">Days are in UTC. Requests are kept for 90 days.</span>
   </div>
   <div class="tiles">
     <div class="card tile"><div class="label">Requests</div><div class="value" id="t-total">-</div><div class="sub" id="t-total-sub"></div></div>
     <div class="card tile"><div class="label">MCP Tool Calls</div><div class="value" id="t-mcp">-</div><div class="sub" id="t-mcp-sub"></div></div>
     <div class="card tile"><div class="label">Errors</div><div class="value" id="t-err">-</div><div class="sub" id="t-err-sub"></div></div>
+    <div class="card tile"><div class="label">Noise</div><div class="value" id="t-noise">-</div><div class="sub" id="t-noise-sub"></div></div>
   </div>
 
   <section class="card">
@@ -363,7 +373,7 @@ th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
         <input id="sn-search" type="search" placeholder="Filter queries" aria-label="Filter Queries" size="16">
         <label class="filters"><input type="checkbox" id="sn-errors"> Only errors</label>
         <button id="sn-clear">Clear Filters</button>
-        <span class="scope" style="margin-left:auto">These filters apply to everything on this tab. Days are in UTC.</span>
+        <span class="scope" style="margin-left:auto">These filters apply to everything on this tab. Noise is always left out. Days are in UTC.</span>
       </div>
 
       <div class="tiles">
@@ -478,8 +488,31 @@ async function api(path) {
 const state = { days: 30, reqBefore: null, view: "traffic", sub: "coverage" };
 try { const d = Number(localStorage.getItem("admin-days")); if ([1, 7, 30, 90].includes(d)) state.days = d; } catch {}
 
-function endpointCell(ep) {
-  return el("td", { class: "ep", style: `--c:${colorOf(ep)}` }, ep);
+const CATEGORY_LABELS = { protocol: "protocol", unknown: "unknown tool", scanner: "scanner" };
+const CATEGORY_TITLES = {
+  protocol: "MCP session or discovery request",
+  unknown: "A tool or method the MCP server doesn't have",
+  scanner: "A scanner probing for weaknesses",
+};
+function categoryBadge(category, label) {
+  if (!category || category === "use") return null;
+  return el("span", { class: "badge cat" + (category === "protocol" ? "" : " warn"), title: CATEGORY_TITLES[category] }, label || CATEGORY_LABELS[category]);
+}
+function endpointCell(ep, category) {
+  return el("td", { class: "ep", style: `--c:${colorOf(ep)}` }, ep, categoryBadge(category));
+}
+const isError = (r) => r.status >= 400 || !!r.rpc_error;
+
+// What the traffic view leaves out, remembered in this browser. Protocol
+// requests and noise are left out unless asked for.
+const traffic = { hideProtocol: true, hideNoise: true, errorsOnly: false };
+try { Object.assign(traffic, JSON.parse(localStorage.getItem("admin-traffic") || "{}")); } catch {}
+function trafficParams(extra = {}) {
+  const p = new URLSearchParams({ days: state.days, ...extra });
+  if (traffic.hideProtocol) p.set("hide_protocol", "true");
+  if (traffic.hideNoise) p.set("hide_noise", "true");
+  if (traffic.errorsOnly) p.set("errors", "true");
+  return p;
 }
 
 function fillEndpointSelect(select, endpoints) {
@@ -494,17 +527,21 @@ function fillEndpointSelect(select, endpoints) {
 // ---- Stats ----
 let lastStats = null;
 async function loadStats() {
-  const stats = await api(`/admin/api/stats?days=${state.days}`);
-  const mcpCalls = stats.endpoints.filter(e => e.endpoint.startsWith("mcp:") && !["mcp:initialize", "mcp:tools/list", "mcp:GET", "mcp:DELETE"].includes(e.endpoint))
-    .reduce((s, e) => s + e.count, 0);
+  const stats = await api(`/admin/api/stats?${trafficParams()}`);
   $("t-total").textContent = fmt.format(stats.total);
   const perDay = stats.total / state.days;
   $("t-total-sub").textContent = `${perDay >= 10 ? fmt.format(Math.round(perDay)) : perDay.toFixed(1)} per day`;
-  $("t-mcp").textContent = fmt.format(mcpCalls);
-  const sessions = stats.endpoints.find(e => e.endpoint === "mcp:initialize");
-  $("t-mcp-sub").textContent = `${fmt.format(sessions ? sessions.count : 0)} client connections`;
+  $("t-mcp").textContent = fmt.format(stats.mcp_tool_calls);
+  $("t-mcp-sub").textContent = `${fmt.format(stats.mcp_sessions)} client connections`;
   $("t-err").textContent = fmt.format(stats.errors);
-  $("t-err-sub").textContent = stats.total ? `${(100 * stats.errors / stats.total).toFixed(2)}% of requests` : "";
+  const errorShare = stats.total && !traffic.errorsOnly ? `${(100 * stats.errors / stats.total).toFixed(2)}% of these requests` : "";
+  $("t-err-sub").textContent = [errorShare, traffic.hideNoise && stats.noise_errors ? `${fmt.format(stats.noise_errors)} more from noise` : ""]
+    .filter(Boolean).join(" · ");
+  $("t-noise").textContent = fmt.format(stats.noise);
+  $("t-noise-sub").textContent = `Unknown MCP tools and scanners: ${traffic.hideNoise ? "hidden" : "shown"}`;
+  const hidden = [traffic.hideProtocol && stats.protocol ? `${fmt.format(stats.protocol)} protocol` : "",
+    traffic.hideNoise && stats.noise ? `${fmt.format(stats.noise)} noise` : ""].filter(Boolean);
+  $("traffic-note").textContent = `${hidden.length ? `Hiding ${hidden.join(" and ")} requests. ` : ""}Days are in UTC; requests are kept for 90 days.`;
 
   const tbody = $("endpoints");
   tbody.replaceChildren();
@@ -512,7 +549,7 @@ async function loadStats() {
   for (const e of stats.endpoints) {
     const pick = () => { $("req-endpoint").value = e.endpoint; resetRequests(); $("req-endpoint").scrollIntoView({ behavior: "smooth", block: "center" }); };
     tbody.append(el("tr", { class: "click", tabindex: 0, onclick: pick, onkeydown: (ev) => ev.key === "Enter" && pick() },
-      endpointCell(e.endpoint),
+      endpointCell(e.endpoint, e.noise === e.count ? (e.endpoint.startsWith("mcp:") ? "unknown" : "scanner") : e.protocol === e.count ? "protocol" : null),
       el("td", { class: "num" }, fmt.format(e.count)),
       el("td", { class: "num" + (e.errors ? " bad" : "") }, fmt.format(e.errors)),
       el("td", { class: "num" }, `${ms(e.avg_ms)} ms`),
@@ -623,7 +660,7 @@ function showTip(ev, chart, tip, day, counts, series, total) {
 // ---- Top queries ----
 async function loadTop() {
   const endpoint = $("top-endpoint").value;
-  const rows = await api(`/admin/api/top?days=${state.days}&endpoint=${encodeURIComponent(endpoint)}`);
+  const rows = await api(`/admin/api/top?${trafficParams({ endpoint })}`);
   const tbody = $("top");
   tbody.replaceChildren();
   if (!rows.length) tbody.append(el("tr", {}, el("td", { colspan: 3, class: "empty" }, "No queries in this range.")));
@@ -637,7 +674,7 @@ async function loadTop() {
 // ---- Requests ----
 function resetRequests() { state.reqBefore = null; $("requests").replaceChildren(); loadRequests(); }
 async function loadRequests() {
-  const params = new URLSearchParams({ days: state.days, endpoint: $("req-endpoint").value, contains: $("req-search").value.trim() });
+  const params = trafficParams({ endpoint: $("req-endpoint").value, contains: $("req-search").value.trim() });
   if (state.reqBefore) params.set("before", state.reqBefore);
   const rows = await api(`/admin/api/requests?${params}`);
   const tbody = $("requests");
@@ -646,9 +683,9 @@ async function loadRequests() {
     const open = () => openDetail(r.id);
     tbody.append(el("tr", { class: "click", tabindex: 0, onclick: open, onkeydown: (ev) => ev.key === "Enter" && open() },
       el("td", { class: "time", title: new Date(r.ts).toISOString() }, new Date(r.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
-      endpointCell(r.endpoint),
-      el("td", { class: "q" }, r.query || ""),
-      el("td", { class: "num" + (r.status >= 400 ? " bad" : "") }, r.status),
+      endpointCell(r.endpoint, r.category),
+      el("td", { class: "q" }, r.query || "", r.rpc_error ? el("span", { class: "rpc-err" }, r.rpc_error) : null),
+      el("td", { class: "num" + (isError(r) ? " bad" : ""), title: r.rpc_error ? `HTTP ${r.status}, but the MCP call failed` : null }, r.status),
       el("td", { class: "num" }, ms(r.duration_ms))));
   }
   state.reqBefore = rows.length ? rows[rows.length - 1].id : state.reqBefore;
@@ -670,6 +707,8 @@ async function openDetail(id) {
   const url = r.path + (r.query_string ? `?${r.query_string}` : "");
   const rows = [["Time", `${new Date(r.ts).toLocaleString()} (${new Date(r.ts).toISOString()})`],
     ["Request", `${r.method} ${url}`], ["Status Then", `${r.status} in ${ms(r.duration_ms)} ms`], ["Client", r.user_agent || "Unknown"]];
+  if (r.rpc_error) rows.splice(3, 0, ["MCP Error", el("span", { class: "err" }, r.rpc_error)]);
+  if (r.category && r.category !== "use") rows.push(["Category", el("span", {}, categoryBadge(r.category), " ", CATEGORY_TITLES[r.category])]);
   if (r.language !== null && r.language !== undefined) {
     const source = sourceOf(r.endpoint);
     const as = searchedAs(r.language, source);
@@ -977,8 +1016,8 @@ async function loadSnippetRequests() {
       el("td", { class: "time", title: new Date(r.ts).toISOString() }, new Date(r.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
       el("td", { class: "time" }, SOURCE_LABELS[sourceOf(r.endpoint)]),
       el("td", {}, languageLabel(r.language || "")),
-      el("td", { class: "q" }, r.query || ""),
-      el("td", { class: "num" + (r.status >= 400 ? " bad" : "") }, r.status),
+      el("td", { class: "q" }, r.query || "", r.rpc_error ? el("span", { class: "rpc-err" }, r.rpc_error) : null),
+      el("td", { class: "num" + (isError(r) ? " bad" : ""), title: r.rpc_error ? `HTTP ${r.status}, but the MCP call failed` : null }, r.status),
       el("td", { class: "num" }, ms(r.duration_ms))));
   }
   sn.offset += rows.length;
@@ -1200,6 +1239,14 @@ async function refresh() {
 // One time range, shown on every tab it applies to.
 for (const r of document.querySelectorAll(".range")) r.addEventListener("click", (ev) => { const d = Number(ev.target.dataset.days); if (d) setDays(d); });
 $("top-endpoint").addEventListener("change", loadTop);
+for (const [id, key] of [["hide-protocol", "hideProtocol"], ["hide-noise", "hideNoise"], ["errors-only", "errorsOnly"]]) {
+  $(id).checked = traffic[key];
+  $(id).addEventListener("change", () => {
+    traffic[key] = $(id).checked;
+    try { localStorage.setItem("admin-traffic", JSON.stringify(traffic)); } catch {}
+    refresh();
+  });
+}
 $("req-endpoint").addEventListener("change", resetRequests);
 let searchTimer;
 $("req-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(resetRequests, 300); });

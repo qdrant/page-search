@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use actix_web::body::MessageBody;
+use actix_web::body::{BoxBody, MessageBody};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::{header, Method};
 use actix_web::middleware::Next;
@@ -9,6 +9,7 @@ use actix_web::{Error, HttpMessage, HttpResponse};
 use futures::StreamExt;
 use serde_json::Value;
 
+use super::category::{categorize, Request as CategoryRequest};
 use super::store::{now_ms, RequestLog, RequestRecord};
 use super::{MCP_SNIPPETS_ENDPOINT, SNIPPETS_ENDPOINT};
 
@@ -127,7 +128,7 @@ pub async fn log_requests(
         _ => false,
     };
     let Some(log) = log.filter(|_| !is_replay) else {
-        return Ok(next.call(req).await?.map_into_left_body());
+        return Ok(next.call(req).await?.map_into_boxed_body());
     };
 
     let start = Instant::now();
@@ -150,7 +151,7 @@ pub async fn log_requests(
             bytes.extend_from_slice(&chunk?);
             if bytes.len() > MAX_MCP_BODY {
                 let response = HttpResponse::PayloadTooLarge().finish();
-                return Ok(req.into_response(response).map_into_right_body());
+                return Ok(req.into_response(response).map_into_boxed_body());
             }
         }
         let bytes: Bytes = bytes.freeze();
@@ -161,11 +162,39 @@ pub async fn log_requests(
     }
 
     let Some((endpoint, query)) = classify(&method, &path, &query_string, body.as_deref()) else {
-        return Ok(next.call(req).await?.map_into_left_body());
+        return Ok(next.call(req).await?.map_into_boxed_body());
     };
 
     let language = snippet_language(&endpoint, &query_string, body.as_deref());
-    let response = next.call(req).await?;
+    let mut response = next.call(req).await?.map_into_boxed_body();
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    // An MCP server answers errors with HTTP 200: read how the call went
+    // from the JSON-RPC response, then hand the response on.
+    let mut rpc_error = None;
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if endpoint.starts_with("mcp:") && is_json {
+        let (request, res) = response.into_parts();
+        let (res, response_body) = res.into_parts();
+        let bytes = actix_web::body::to_bytes(response_body)
+            .await
+            .map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
+        rpc_error = rpc_error_of(&bytes);
+        response = ServiceResponse::new(request, res.set_body(BoxBody::new(bytes)));
+    }
+
+    let category = categorize(&CategoryRequest {
+        endpoint: &endpoint,
+        path: &path,
+        query_string: &query_string,
+        query: query.as_deref(),
+        user_agent: user_agent.as_deref(),
+        rpc_error: rpc_error.as_deref(),
+    });
     log.record(RequestRecord {
         id: 0,
         ts,
@@ -176,11 +205,52 @@ pub async fn log_requests(
         query_string,
         body: body.map(|b| String::from_utf8_lossy(&b).into_owned()),
         status: response.status().as_u16(),
-        duration_ms: start.elapsed().as_secs_f64() * 1000.0,
+        duration_ms,
         user_agent,
         language,
+        rpc_error,
+        category,
     });
-    Ok(response.map_into_left_body())
+    Ok(response)
+}
+
+/// Longest tool error kept in the log.
+const MAX_TOOL_ERROR: usize = 300;
+
+/// The error a JSON-RPC response reports: a JSON-RPC error as its code and
+/// message, or a tool's own error as `tool error: ` and its text. A batch
+/// is judged by its first response.
+pub(crate) fn rpc_error_of(body: &[u8]) -> Option<String> {
+    let json: Value = serde_json::from_slice(body).ok()?;
+    let message = json.as_array().and_then(|a| a.first()).unwrap_or(&json);
+    if let Some(error) = message.get("error") {
+        let code = error
+            .get("code")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let text = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return Some(format!("{code} {text}"));
+    }
+    if message.pointer("/result/isError") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let text: String = message
+        .pointer("/result/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut short: String = text.chars().take(MAX_TOOL_ERROR).collect();
+    if short.len() < text.len() {
+        short.push('…');
+    }
+    Some(format!("tool error: {short}"))
 }
 
 #[cfg(test)]
@@ -232,6 +302,24 @@ mod tests {
             Some("".into())
         );
         assert_eq!(snippet_language("search", "language=python", None), None);
+    }
+
+    #[test]
+    fn reads_rpc_errors() {
+        let ok = br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Found"}],"isError":false}}"#;
+        assert_eq!(rpc_error_of(ok), None);
+        let unknown =
+            br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"tool not found"}}"#;
+        assert_eq!(
+            rpc_error_of(unknown).as_deref(),
+            Some("-32602 tool not found")
+        );
+        let failed = br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Page not found:\n /x/"}],"isError":true}}"#;
+        assert_eq!(
+            rpc_error_of(failed).as_deref(),
+            Some("tool error: Page not found: /x/")
+        );
+        assert_eq!(rpc_error_of(b"event: message"), None);
     }
 
     #[test]
