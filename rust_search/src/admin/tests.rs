@@ -17,6 +17,9 @@ use crate::docs_mcp::config::Config;
 use crate::docs_mcp::{Backend, DocsServer, FixedBackend};
 use crate::request_log::{self, ReplayToken};
 
+/// Where the service is reached from outside, unlike `Harness::base`.
+const PUBLIC_URL: &str = "https://search.example.com";
+
 struct Harness {
     base: String,
     google: MockServer,
@@ -33,7 +36,11 @@ impl Drop for Harness {
 }
 
 async fn echo_search(req: HttpRequest) -> HttpResponse {
-    HttpResponse::Ok().json(json!({ "query": req.query_string() }))
+    let conn = req.connection_info();
+    HttpResponse::Ok().json(json!({
+        "query": req.query_string(),
+        "url": format!("{}://{}", conn.scheme(), conn.host()),
+    }))
 }
 
 async fn echo_mcp(body: String) -> HttpResponse {
@@ -54,7 +61,7 @@ impl Harness {
             client_id: "client".into(),
             client_secret: "secret".into(),
             session_key: "a session key that is long enough to derive from".into(),
-            public_url: base.clone(),
+            public_url: PUBLIC_URL.into(),
             allowed_domains: vec!["qdrant.com".into()],
             allowed_emails: vec!["friend@example.com".into()],
             auth_url: format!("{}/auth", google.uri()),
@@ -162,7 +169,7 @@ impl Harness {
         };
         assert_eq!(
             param("redirect_uri"),
-            Some(format!("{}/admin/auth/callback", self.base))
+            Some(format!("{PUBLIC_URL}/admin/auth/callback"))
         );
         assert_eq!(param("hd").as_deref(), Some("qdrant.com"));
         let state = param("state").unwrap();
@@ -317,6 +324,8 @@ async fn admins_see_stats_and_replay_requests() {
     assert_eq!(replay["status"], 200);
     let body: Value = serde_json::from_str(replay["body"].as_str().unwrap()).unwrap();
     assert_eq!(body["query"], "q=hnsw&section=");
+    // Links in the answer point at the public address, not at loopback.
+    assert_eq!(body["url"], PUBLIC_URL);
 
     let replay = h
         .json(
