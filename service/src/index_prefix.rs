@@ -5,8 +5,8 @@ use qdrant_client::qdrant::{
     VectorsConfig,
 };
 use qdrant_client::qdrant::{CreateCollection, Distance, Document, UpsertPointsBuilder, Value};
-use rust_search::embedding::NEURAL_ENCODER;
-use rust_search::qdrant::{client_from_env, prefix_to_id, PREFIX_COLLECTION_NAME};
+use page_search::embedding::NEURAL_ENCODER;
+use page_search::qdrant::{client_from_env, prefix_to_id, PREFIX_COLLECTION_NAME};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use tokio::main;

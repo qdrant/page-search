@@ -22,7 +22,7 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
     - name: Build backend
       run: |
-        cd $GITHUB_WORKSPACE/rust_search
+        cd $GITHUB_WORKSPACE/service
         docker build -t qdrant/site-search:${{ github.sha }} .
         cd $GITHUB_WORKSPACE
         docker save -o qdrant-site-search.tar qdrant/site-search:${{ github.sha }}

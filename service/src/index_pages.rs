@@ -2,7 +2,7 @@
 //! `/docs-manifest.json`, which lists every page that has a Markdown version.
 //!
 //! The collection suggests pages in place of missing ones, and holds what the
-//! page index says about each page (see [`rust_search::pages::PageMeta`]), so
+//! page index says about each page (see [`page_search::pages::PageMeta`]), so
 //! the service never reads the page index itself. `DOCS_MANIFEST_URL` sets
 //! where it is read from.
 //!
@@ -17,14 +17,14 @@ use qdrant_client::qdrant::{
     SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder,
     VectorParamsBuilder, VectorsConfigBuilder,
 };
-use rust_search::embedding::QueryEncoder;
-use rust_search::pages::{page_key, PageMeta, RENDERED_FIELD};
-use rust_search::qdrant::{client_from_env, PAGE_COLLECTION_NAME};
-use rust_search::similar_paths::{page_point, PageText, MEANING_VECTOR, SLUG_VECTOR, WORDS_VECTOR};
+use page_search::embedding::QueryEncoder;
+use page_search::pages::{page_key, PageMeta, RENDERED_FIELD};
+use page_search::qdrant::{client_from_env, PAGE_COLLECTION_NAME};
+use page_search::similar_paths::{page_point, PageText, MEANING_VECTOR, SLUG_VECTOR, WORDS_VECTOR};
 use serde::Deserialize;
 use tokio::main;
 
-/// Size of [`rust_search::embedding::NEURAL_ENCODER`] vectors.
+/// Size of [`page_search::embedding::NEURAL_ENCODER`] vectors.
 const MEANING_SIZE: u64 = 384;
 const BATCH: usize = 256;
 const DEFAULT_MANIFEST_URL: &str = "https://qdrant.tech/docs-manifest.json";

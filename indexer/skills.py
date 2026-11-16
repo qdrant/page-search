@@ -25,14 +25,14 @@ from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
 from yaml.scanner import ScannerError
 
-from site_search.config import (
+from indexer.config import (
     QDRANT_API_KEY,
     QDRANT_HOST,
     QDRANT_PORT,
     SKILLS_COLLECTION_NAME,
     SNIPPET_ENCODER,
 )
-from site_search.retry import TooManyRetriesError, retry
+from indexer.retry import TooManyRetriesError, retry
 
 
 class Skill(BaseModel):

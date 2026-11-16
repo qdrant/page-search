@@ -31,7 +31,7 @@ from qdrant_client.http.models import (
 )
 from qdrant_client.models import PayloadSchemaType, VectorStruct
 
-from site_search.config import (
+from indexer.config import (
     OPENAI_API_KEY,
     QDRANT_API_KEY,
     QDRANT_HOST,
@@ -39,8 +39,8 @@ from site_search.config import (
     SNIPPET_COLLECTION_NAME,
     SNIPPET_ENCODER,
 )
-from site_search.retry import retry, retry_async
-from site_search.sections import _all_sitemap_urls
+from indexer.retry import retry, retry_async
+from indexer.sections import _all_sitemap_urls
 
 
 # python >= 3.12 has this builtin

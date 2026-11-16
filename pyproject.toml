@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "site-search"
+name = "page-search-indexer"
 version = "0.1.0"
 description = ""
 authors = ["Andrey Vasnetsov <andrey@vasnetsov.com>"]
