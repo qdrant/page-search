@@ -1,7 +1,7 @@
 # Indexers
 
-The Python modules in `site_search` crawl the site and fill the Qdrant
-collections. The service that answers searches is in `rust_search`.
+The Python modules in `indexer` crawl the site and fill the Qdrant
+collections. The service that answers searches is in `service`.
 
 ## Setup
 
@@ -22,8 +22,8 @@ Crawl the HTML of qdrant.tech into `data/abstracts.jsonl`, then embed it into
 the `site` collection:
 
 ```
-poetry run python -m site_search.crawl
-poetry run python -m site_search.encode
+poetry run python -m indexer.crawl
+poetry run python -m indexer.encode
 ```
 
 ### Sections
@@ -33,7 +33,7 @@ section. Text before the first heading, or a whole page without headings, is a
 section without a title.
 
 ```
-poetry run python -m site_search.sections
+poetry run python -m indexer.sections
 ```
 
 ### Skills
@@ -41,7 +41,7 @@ poetry run python -m site_search.sections
 Read skills.qdrant.tech into the `skills` collection:
 
 ```
-poetry run python -m site_search.skills
+poetry run python -m indexer.skills
 ```
 
 ### Snippets
@@ -50,7 +50,7 @@ Read the code examples of every page into the `snippet-search` collection.
 New examples get descriptions from OpenAI, so this needs `OPENAI_API_KEY`.
 
 ```
-poetry run python -m site_search.snippets
+poetry run python -m indexer.snippets
 ```
 
 ## Docker
@@ -59,5 +59,5 @@ The update workflow builds the root `Dockerfile` and runs each module in it:
 
 ```
 docker build -t page-search-indexer .
-docker run --rm -e QDRANT_HOST -e QDRANT_API_KEY page-search-indexer python -m site_search.sections
+docker run --rm -e QDRANT_HOST -e QDRANT_API_KEY page-search-indexer python -m indexer.sections
 ```

@@ -8,7 +8,7 @@ from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams, TextIndexParams, TokenizerType, PointStruct
 
-from site_search.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY, NEURAL_ENCODER
+from indexer.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, DATA_DIR, QDRANT_API_KEY, NEURAL_ENCODER
 
 BATCH_SIZE = 256
 

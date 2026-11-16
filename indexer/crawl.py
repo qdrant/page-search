@@ -12,7 +12,7 @@ from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
 
-from site_search.config import DATA_DIR
+from indexer.config import DATA_DIR
 
 HEADER_TAGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
 

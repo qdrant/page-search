@@ -25,7 +25,7 @@ from usp.fetch_parse import SitemapFetcher
 from usp.objects.sitemap import IndexWebsiteSitemap, InvalidSitemap
 from usp.tree import sitemap_tree_for_homepage
 
-from site_search.config import (
+from indexer.config import (
     NEURAL_ENCODER,
     QDRANT_API_KEY,
     QDRANT_HOST,

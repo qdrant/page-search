@@ -146,7 +146,7 @@ applies to `/api/search` and `/md` as well as `/mcp`.
 
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 -v page-search-qdrant:/qdrant/storage qdrant/qdrant
-# Index the `site` and `sections` collections with the Python tools in ../site_search
+# Index the `site` and `sections` collections with the Python tools in ../indexer
 # (see ../dev-docs.md), then build `pages` from them:
 QDRANT_URL=http://localhost:6334 QUERY_EMBEDDING=local \
   cargo run --release --features local-embeddings --bin index_pages

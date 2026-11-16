@@ -2718,6 +2718,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "page_search"
+version = "0.1.0"
+dependencies = [
+ "actix-cors",
+ "actix-http",
+ "actix-session",
+ "actix-web",
+ "anyhow",
+ "env_logger",
+ "fastembed",
+ "futures",
+ "itertools 0.11.0",
+ "log",
+ "qdrant-client",
+ "rand 0.8.5",
+ "regex",
+ "reqwest 0.12.8",
+ "rmcp",
+ "rmcp-actix-web",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3533,35 +3562,6 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
-]
-
-[[package]]
-name = "rust_search"
-version = "0.1.0"
-dependencies = [
- "actix-cors",
- "actix-http",
- "actix-session",
- "actix-web",
- "anyhow",
- "env_logger",
- "fastembed",
- "futures",
- "itertools 0.11.0",
- "log",
- "qdrant-client",
- "rand 0.8.5",
- "regex",
- "reqwest 0.12.8",
- "rmcp",
- "rmcp-actix-web",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "url",
- "wiremock",
 ]
 
 [[package]]

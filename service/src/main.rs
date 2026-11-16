@@ -3,11 +3,11 @@ use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 use actix_cors::Cors;
 use actix_web::{main, middleware, web::Data, App, HttpServer};
 use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
-use rust_search::admin::{AdminConfig, AdminPanel, ReplayTarget};
-use rust_search::docs_mcp::{config::Config, Backend, DocsServer};
-use rust_search::embedding::QueryEncoder;
-use rust_search::request_log::{self, ReplayToken, RequestLog};
-use rust_search::{search, sections, skills, snippets};
+use page_search::admin::{AdminConfig, AdminPanel, ReplayTarget};
+use page_search::docs_mcp::{config::Config, Backend, DocsServer};
+use page_search::embedding::QueryEncoder;
+use page_search::request_log::{self, ReplayToken, RequestLog};
+use page_search::{search, sections, skills, snippets};
 
 /// Hosts the docs MCP server answers by default: this service's public name,
 /// and loopback for local testing.
@@ -25,7 +25,7 @@ async fn main() -> std::io::Result<()> {
 
     let uri = std::env::var("SERVICE_URL").map_or("0.0.0.0:8005".into(), Cow::Owned);
     let addr: SocketAddr = uri.parse().expect("malformed URI");
-    let qdrant = rust_search::qdrant::client_from_env().expect("invalid Qdrant settings");
+    let qdrant = page_search::qdrant::client_from_env().expect("invalid Qdrant settings");
     qdrant.health_check().await.unwrap();
     let qdrant = Arc::new(qdrant);
     let encoder = QueryEncoder::from_env().expect("invalid QUERY_EMBEDDING");

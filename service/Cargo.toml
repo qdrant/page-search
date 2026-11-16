@@ -1,5 +1,5 @@
 [package]
-name = "rust_search"
+name = "page_search"
 version = "0.1.0"
 edition = "2021"
 
