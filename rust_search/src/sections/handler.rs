@@ -13,6 +13,7 @@ use serde::Deserialize;
 use super::models::{Section, SectionSearchResult, slugify_heading};
 use crate::qdrant::SECTION_COLLECTION_NAME;
 use crate::embedding::QueryEncoder;
+use crate::pages::{is_snippet_page, SNIPPET_PAGES};
 use crate::similar_paths::{suggest, Suggestion};
 
 /// Most pages suggested for a missing path.
@@ -138,16 +139,24 @@ async fn search_by_query(
 }
 
 /// Scroll every point under `path` to enumerate its distinct sub-pages in full (issue #30).
+/// Snippet pages are only listed below [`SNIPPET_PAGES`].
 async fn fetch_sublinks(client: &Qdrant, path: &str) -> anyhow::Result<Vec<String>> {
+    let mut must_not = vec![Condition::matches(
+        "page",
+        MatchValue::Keyword(path.to_string()),
+    )];
+    if !is_snippet_page(path) {
+        must_not.push(Condition::matches(
+            "parent_pages",
+            MatchValue::Keyword(SNIPPET_PAGES.to_string()),
+        ));
+    }
     let filter = Filter {
         must: vec![Condition::matches(
             "parent_pages",
             MatchValue::Keyword(path.to_string()),
         )],
-        must_not: vec![Condition::matches(
-            "page",
-            MatchValue::Keyword(path.to_string()),
-        )],
+        must_not,
         ..Default::default()
     };
 

@@ -75,6 +75,23 @@ class Section(BaseModel):
 class _ParsingResult(BaseModel):
     url: str
     sections: list[Section]
+    # Snippet pages the page links to.
+    snippet_pages: set[str] = set()
+
+
+# Pages with a code example in every client language. The sitemap doesn't list
+# them, so they are found through the documentation pages that link to them.
+_SNIPPET_LINK = re.compile(r"https://qdrant\.tech/documentation/snippets/[^)\s#?]+")
+
+
+def _snippet_pages(document: str) -> set[str]:
+    """URLs of the snippet pages `document` links to, such as
+    https://qdrant.tech/documentation/snippets/query-points/hybrid-rrf/"""
+    pages = set()
+    for link in _SNIPPET_LINK.findall(document):
+        url = link.removesuffix("index.md")
+        pages.add(url if url.endswith("/") else url + "/")
+    return pages
 
 
 class _Heading(BaseModel):
@@ -161,7 +178,9 @@ def _parse_markdown(url: str) -> _ParsingResult:
         last[heading.level] = section
         sections.append(section)
 
-    return _ParsingResult(sections=sections, url=url)
+    return _ParsingResult(
+        sections=sections, url=url, snippet_pages=_snippet_pages(document)
+    )
 
 
 def _all_sitemap_urls(url: str, sitemap_url: str | None = None) -> list[str]:
@@ -264,7 +283,14 @@ def main():
     )
 
     urls = _all_sitemap_urls("https://qdrant.tech/", "https://qdrant.tech/sitemap.xml")
+    snippet_pages = _index_pages(qdrant_client, urls)
+    _index_pages(qdrant_client, sorted(snippet_pages - set(urls)))
 
+
+def _index_pages(qdrant_client: QdrantClient, urls: list[str]) -> set[str]:
+    """Index the sections of the pages at `urls`, and return the snippet pages
+    they link to."""
+    snippet_pages: set[str] = set()
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_parse_markdown, url) for url in urls]
 
@@ -272,6 +298,7 @@ def main():
             concurrent.futures.as_completed(futures), total=len(urls)
         ):
             result = future.result()
+            snippet_pages |= result.snippet_pages
 
             if len(result.sections) == 0:
                 continue
@@ -282,6 +309,7 @@ def main():
                     section.as_point(NEURAL_ENCODER) for section in result.sections
                 ],
             )
+    return snippet_pages
 
 
 if __name__ == "__main__":

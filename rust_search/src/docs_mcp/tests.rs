@@ -1,5 +1,5 @@
-//! Tests that run the real server in-process, with an MCP client, against a
-//! fake qdrant.tech and canned search results.
+//! Tests that run the real server in-process, with an MCP client, against
+//! fixed pages and canned search results.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,27 +10,41 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{DocsServer, SearchBackend, Source};
+use super::{Backend, DocsServer, Source};
 use crate::docs_mcp::config::{Config, SOURCES};
+use crate::docs_mcp::library::SITE_URL;
+use crate::pages::{page_key, StoredPage};
 use crate::similar_paths::MemoryIndex;
 use crate::snippets::Snippet;
 
 /// Canned search results per source, recording the source and partitions of
-/// each request, and canned snippets, recording the language of each request.
+/// each request, canned snippets, recording the language of each request,
+/// and pages, recording each page read.
 #[derive(Default)]
-pub struct FixedSearch {
+pub struct FixedBackend {
     results: HashMap<String, Vec<ScoredPoint>>,
     pub requests: Mutex<Vec<(String, Vec<String>)>>,
     snippets: Vec<Value>,
     pub snippet_requests: Mutex<Vec<Option<String>>>,
-    /// The pages of the fake site, for suggestions.
-    pub pages: MemoryIndex,
+    /// The page index. [`page_index`] if left empty.
+    pub pages: Vec<StoredPage>,
+    /// The pages with their own page, for suggestions.
+    pub similar: MemoryIndex,
+    /// Markdown by `page` key.
+    markdown: HashMap<String, String>,
+    pub markdown_requests: Mutex<Vec<String>>,
 }
 
-impl FixedSearch {
+impl FixedBackend {
+    pub fn page_markdown(&self, page: &str) -> Option<String> {
+        self.markdown_requests
+            .lock()
+            .unwrap()
+            .push(page.to_string());
+        self.markdown.get(page).cloned()
+    }
+
     pub fn search(&self, source: &str, partitions: &[String]) -> Vec<ScoredPoint> {
         self.requests
             .lock()
@@ -98,8 +112,8 @@ fn hit(url: &str, title: &str, text: &str) -> ScoredPoint {
     }
 }
 
-fn search_results() -> FixedSearch {
-    FixedSearch {
+fn search_results() -> FixedBackend {
+    FixedBackend {
         results: HashMap::from([
             (
                 "documentation".to_string(),
@@ -134,13 +148,13 @@ fn search_results() -> FixedSearch {
             ),
         ]),
         snippets: snippets(),
-        ..FixedSearch::default()
+        ..FixedBackend::default()
     }
 }
 
-fn manifest() -> Value {
+/// The page index, as the site's page index lists it.
+fn page_index() -> Value {
     json!({
-        "version": 1,
         "pages": [
             {"path": "/documentation/search/", "title": "Search", "description": "Search Qdrant.",
              "kind": "section", "partition": "develop", "weight": 2, "aliases": []},
@@ -156,7 +170,7 @@ fn manifest() -> Value {
             {"path": "/documentation/faq/basics/", "title": "Basics", "kind": "page", "weight": 1, "aliases": []},
             {"path": "/blog/", "title": "Blog", "description": "News.", "kind": "section", "weight": 0, "aliases": []},
             {"path": "/blog/old-post/", "title": "Old Post", "kind": "page", "weight": 1000.0, "date": "2023-01-01", "aliases": []},
-            {"path": "/blog/new-post/", "title": "New Post", "kind": "page", "weight": 0, "date": "2026-01-01", "aliases": null},
+            {"path": "/blog/new-post/", "title": "New Post", "kind": "page", "weight": 0, "date": "2026-01-01", "aliases": []},
         ],
     })
 }
@@ -171,74 +185,81 @@ const PAGE_MD: &str = "\
 Use `prefetch`.
 ";
 
-const LLMS_TXT: &str = "\
-# https://qdrant.tech/
-## Documentation
-- [Hybrid Queries](https://qdrant.tech/documentation/search/hybrid-queries/index.md): Fuse results.
-- [Blog post](https://qdrant.tech/blog/x/index.md): Not docs.
+const SNIPPET_MD: &str = "\
+# Code snippet: query-points/hybrid-rrf
+
+## Qdrant Server
+
+```go
+client.Query()
+```
 ";
 
-/// A fake qdrant.tech, with or without the manifest.
-async fn fake_site(with_manifest: bool) -> MockServer {
-    let site = MockServer::start().await;
-    let manifest = if with_manifest {
-        ResponseTemplate::new(200).set_body_json(manifest())
-    } else {
-        ResponseTemplate::new(404)
-    };
-    Mock::given(method("GET"))
-        .and(path("/docs-manifest.json"))
-        .respond_with(manifest)
-        .mount(&site)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/llms.txt"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(LLMS_TXT))
-        .mount(&site)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/documentation/search/hybrid-queries/index.md"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_MD))
-        .mount(&site)
-        .await;
-    site
+/// Pages as the `pages` collection stores the entries of a page index.
+fn stored(index: &Value) -> Vec<StoredPage> {
+    index["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let mut entry = entry.clone();
+            let path = entry["path"].as_str().unwrap().to_string();
+            entry["page"] = json!(page_key(&path));
+            let aliases: Vec<String> = entry["aliases"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|alias| page_key(alias.as_str().unwrap()))
+                .collect();
+            entry["aliases"] = json!(aliases);
+            serde_json::from_value(entry).unwrap()
+        })
+        .collect()
 }
 
 struct Harness {
     client: RunningService<RoleClient, ()>,
-    site: MockServer,
-    search: Arc<FixedSearch>,
+    backend: Arc<FixedBackend>,
 }
 
 impl Harness {
-    async fn new(with_manifest: bool) -> Self {
-        Self::with_search(with_manifest, search_results()).await
+    async fn new() -> Self {
+        Self::with_backend(search_results()).await
     }
 
-    async fn with_search(with_manifest: bool, search: FixedSearch) -> Self {
-        Self::serving(&SOURCES, with_manifest, search).await
+    async fn with_backend(backend: FixedBackend) -> Self {
+        Self::serving(&SOURCES, backend).await
     }
 
     /// A server configured to serve only `sources`.
-    async fn serving(sources: &[&str], with_manifest: bool, search: FixedSearch) -> Self {
-        let site = fake_site(with_manifest).await;
+    async fn serving(sources: &[&str], backend: FixedBackend) -> Self {
         let config = Config {
-            content_base_url: site.uri(),
             sources: sources.iter().map(|s| s.to_string()).collect(),
-            ..Config::default()
         };
-        let mut search = search;
-        search.pages = MemoryIndex(
-            manifest()["pages"]
-                .as_array()
-                .unwrap()
+        let mut backend = backend;
+        if backend.pages.is_empty() {
+            backend.pages = stored(&page_index());
+        }
+        backend.markdown.extend([
+            (
+                "documentation/search/hybrid-queries".to_string(),
+                PAGE_MD.to_string(),
+            ),
+            (
+                "documentation/snippets/query-points/hybrid-rrf".to_string(),
+                SNIPPET_MD.to_string(),
+            ),
+        ]);
+        backend.similar = MemoryIndex(
+            backend
+                .pages
                 .iter()
-                .filter(|page| page["rendered"] != false)
-                .map(|page| page["path"].as_str().unwrap().trim_matches('/').to_string())
+                .filter(|page| page.meta.rendered)
+                .map(|page| page.page.clone())
                 .collect(),
         );
-        let search = Arc::new(search);
-        let server = DocsServer::new(config, SearchBackend::Fixed(search.clone()));
+        let backend = Arc::new(backend);
+        let server = DocsServer::new(config, Backend::Fixed(backend.clone()));
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             server
@@ -250,11 +271,7 @@ impl Harness {
                 .unwrap();
         });
         let client = ().serve(client_transport).await.unwrap();
-        Self {
-            client,
-            site,
-            search,
-        }
+        Self { client, backend }
     }
 
     async fn call(&self, tool: &'static str, arguments: Value) -> CallToolResult {
@@ -271,13 +288,9 @@ impl Harness {
         text(&self.call(tool, arguments).await)
     }
 
-    fn base(&self) -> String {
-        self.site.uri()
-    }
-
-    async fn site_requests(&self) -> Vec<String> {
-        let requests = self.site.received_requests().await.unwrap_or_default();
-        requests.iter().map(|r| r.url.path().to_string()).collect()
+    /// The pages whose Markdown was read.
+    fn markdown_requests(&self) -> Vec<String> {
+        self.backend.markdown_requests.lock().unwrap().clone()
     }
 }
 
@@ -298,7 +311,7 @@ fn results(result: &CallToolResult) -> Vec<Value> {
 
 #[tokio::test]
 async fn search_groups_matches_by_page_and_keeps_only_docs() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let result = h
         .call(
             "search_docs",
@@ -312,10 +325,10 @@ async fn search_groups_matches_by_page_and_keeps_only_docs() {
     assert_eq!(hits[0]["source"], "documentation");
     assert_eq!(
         hits[0]["markdown_url"],
-        format!("{}/documentation/search/hybrid-queries/index.md", h.base())
+        format!("{}/documentation/search/hybrid-queries/index.md", SITE_URL)
     );
     assert_eq!(
-        *h.search.requests.lock().unwrap(),
+        *h.backend.requests.lock().unwrap(),
         [("documentation".to_string(), vec!["develop".to_string()])]
     );
 }
@@ -333,7 +346,7 @@ async fn search_keeps_a_few_matches_per_page() {
     search
         .results
         .insert("documentation".to_string(), many.collect());
-    let h = Harness::with_search(true, search).await;
+    let h = Harness::with_backend(search).await;
     let result = h
         .call(
             "search_docs",
@@ -345,7 +358,7 @@ async fn search_keeps_a_few_matches_per_page() {
 
 #[tokio::test]
 async fn search_queries_each_source_and_interleaves() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let result = h
         .call(
             "search_docs",
@@ -371,14 +384,14 @@ async fn search_queries_each_source_and_interleaves() {
     );
     // The partition only narrows documentation results.
     let requests: HashMap<String, Vec<String>> =
-        h.search.requests.lock().unwrap().iter().cloned().collect();
+        h.backend.requests.lock().unwrap().iter().cloned().collect();
     assert_eq!(requests["documentation"], ["develop"]);
     assert!(requests["blog"].is_empty());
 }
 
 #[tokio::test]
 async fn search_can_pick_sources() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let result = h
         .call(
             "search_docs",
@@ -391,14 +404,14 @@ async fn search_can_pick_sources() {
         .collect();
     assert_eq!(titles, [json!("New Post")]);
     assert_eq!(
-        *h.search.requests.lock().unwrap(),
+        *h.backend.requests.lock().unwrap(),
         [("blog".to_string(), vec![])]
     );
 }
 
 #[tokio::test]
 async fn sources_are_a_plain_enum_argument() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let tools = h.client.list_all_tools().await.unwrap();
     let search = tools.iter().find(|t| t.name == "search_docs").unwrap();
     let items = &search.input_schema["properties"]["sources"]["items"];
@@ -416,12 +429,12 @@ async fn sources_are_a_plain_enum_argument() {
         )
         .await;
     assert!(unknown.is_err() || is_error(&unknown.unwrap()));
-    assert!(h.search.requests.lock().unwrap().is_empty());
+    assert!(h.backend.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn optional_arguments_have_a_single_type() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     for tool in h.client.list_all_tools().await.unwrap() {
         let schema = Value::Object((*tool.input_schema).clone());
         let required = schema["required"].as_array().cloned().unwrap_or_default();
@@ -440,12 +453,12 @@ async fn optional_arguments_have_a_single_type() {
 
 #[tokio::test]
 async fn disabled_sources_are_refused() {
-    let h = Harness::serving(&["documentation"], true, search_results()).await;
+    let h = Harness::serving(&["documentation"], search_results()).await;
 
     // Without `sources`, only the served sources are searched.
     h.call("search_docs", json!({"query": "hybrid"})).await;
     assert_eq!(
-        *h.search.requests.lock().unwrap(),
+        *h.backend.requests.lock().unwrap(),
         [("documentation".to_string(), vec![])]
     );
 
@@ -465,11 +478,7 @@ async fn disabled_sources_are_refused() {
         )
         .await;
     assert!(is_error(&page));
-    assert!(!h
-        .site_requests()
-        .await
-        .iter()
-        .any(|p| p.starts_with("/blog/")));
+    assert!(h.markdown_requests().is_empty());
 
     // The schema is the same whatever the server serves.
     let tools = h.client.list_all_tools().await.unwrap();
@@ -491,7 +500,7 @@ fn source_names_match_the_site_sections() {
 
 #[tokio::test]
 async fn get_page_resolves_alias_and_strips_preamble() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let body = h
         .text(
             "get_page",
@@ -500,7 +509,7 @@ async fn get_page_resolves_alias_and_strips_preamble() {
         .await;
     let expected = format!(
         "Title: Hybrid Queries\nSource: {}/documentation/search/hybrid-queries/",
-        h.base()
+        SITE_URL
     );
     assert!(body.starts_with(&expected), "{body}");
     assert!(body.contains("Last updated: 2026-09-01"));
@@ -511,7 +520,7 @@ async fn get_page_resolves_alias_and_strips_preamble() {
 
 #[tokio::test]
 async fn instructions_group_sections_by_partition() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let instructions = h.client.peer_info().unwrap().instructions.clone().unwrap();
     assert!(instructions.contains("Typical flow"), "{instructions}");
     // Descriptions stay in list_docs, to keep the instructions short.
@@ -531,7 +540,7 @@ Other sources:
 
 #[tokio::test]
 async fn instructions_without_documentation() {
-    let h = Harness::serving(&["blog"], true, search_results()).await;
+    let h = Harness::serving(&["blog"], search_results()).await;
     let instructions = h.client.peer_info().unwrap().instructions.clone().unwrap();
     assert!(!instructions.contains("develop"), "{instructions}");
     assert!(instructions.ends_with("Other sources:\n- /blog/: Blog (3 pages)\n"));
@@ -539,8 +548,14 @@ async fn instructions_without_documentation() {
 
 #[tokio::test]
 async fn instructions_with_unpartitioned_sections() {
-    // llms.txt has no partitions.
-    let h = Harness::new(false).await;
+    // A page without a partition, in a section the page index doesn't list.
+    let h = Harness::with_backend(FixedBackend {
+        pages: stored(&json!({"pages": [
+            {"path": "/documentation/search/hybrid-queries/", "title": "Hybrid Queries"},
+        ]})),
+        ..FixedBackend::default()
+    })
+    .await;
     let instructions = h.client.peer_info().unwrap().instructions.clone().unwrap();
     assert!(
         instructions.contains("Other documentation:\n- /documentation/search/: Search (1 page)"),
@@ -550,7 +565,7 @@ async fn instructions_with_unpartitioned_sections() {
 
 #[tokio::test]
 async fn get_page_reports_missing_page() {
-    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let h = Harness::with_backend(FixedBackend::default()).await;
     let result = h.call("get_page", json!({"page": "nope/nothing"})).await;
     assert!(is_error(&result));
     let text = text(&result);
@@ -562,12 +577,27 @@ async fn get_page_reports_missing_page() {
 }
 
 #[tokio::test]
+async fn listed_page_without_sections_is_unavailable_not_missing() {
+    let h = Harness::new().await;
+    let result = h
+        .call(
+            "get_page",
+            json!({"page": "/documentation/search/filtering/"}),
+        )
+        .await;
+    assert!(is_error(&result));
+    let text = text(&result);
+    assert!(text.contains("can't be read right now"), "{text}");
+    assert!(!text.contains("No page at"), "{text}");
+}
+
+#[tokio::test]
 async fn missing_page_suggests_its_closest_ancestor() {
-    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let h = Harness::with_backend(FixedBackend::default()).await;
     let text = h
         .text("get_page", json!({"page": "search/nope/deeper"}))
         .await;
-    let base = h.base();
+    let base = SITE_URL;
     assert!(
         text.contains(&format!("- Search: {base}/documentation/search/")),
         "{text}"
@@ -576,11 +606,11 @@ async fn missing_page_suggests_its_closest_ancestor() {
 
 #[tokio::test]
 async fn missing_page_suggests_similar_paths_without_searching() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let result = h.call("get_page", json!({"page": "concepts/filter"})).await;
     assert!(is_error(&result));
     let text = text(&result);
-    let base = h.base();
+    let base = SITE_URL;
     assert!(
         text.starts_with("No page at /documentation/concepts/filter/."),
         "{text}"
@@ -598,16 +628,16 @@ async fn missing_page_suggests_similar_paths_without_searching() {
     );
     assert!(!text.contains("/blog/"), "{text}");
     // Meaning is part of the page index query: search_docs isn't called.
-    assert!(h.search.requests.lock().unwrap().is_empty());
+    assert!(h.backend.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn missing_page_suggests_close_slugs_only() {
-    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let h = Harness::with_backend(FixedBackend::default()).await;
     let text = h
         .text("get_page", json!({"page": "/blog/new-posts/"}))
         .await;
-    let base = h.base();
+    let base = SITE_URL;
     assert!(
         text.contains(&format!("- New Post: {base}/blog/new-post/")),
         "{text}"
@@ -617,7 +647,7 @@ async fn missing_page_suggests_close_slugs_only() {
 
 #[tokio::test]
 async fn list_docs_sections_and_sidebar_order() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let sections = h.text("list_docs", json!({})).await;
     let pages = h.text("list_docs", json!({"section": "search"})).await;
     assert!(sections.find("/documentation/cloud/") < sections.find("/documentation/search/"));
@@ -637,7 +667,7 @@ async fn list_docs_sections_and_sidebar_order() {
 
 #[tokio::test]
 async fn section_without_a_page() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let sections = h.text("list_docs", json!({})).await;
     let pages = h.text("list_docs", json!({"section": "faq"})).await;
     let result = h.call("get_page", json!({"page": "faq"})).await;
@@ -651,32 +681,12 @@ async fn section_without_a_page() {
     );
     assert!(is_error(&result));
     assert!(text(&result).contains("Call list_docs with section '/documentation/faq/'"));
-    assert!(!h
-        .site_requests()
-        .await
-        .iter()
-        .any(|p| p.ends_with("index.md")));
-}
-
-#[tokio::test]
-async fn falls_back_to_llms_txt_without_manifest() {
-    let h = Harness::new(false).await;
-    let sections = h.text("list_docs", json!({})).await;
-    let pages = h.text("list_docs", json!({"section": "search"})).await;
-    // llms.txt has no section entries, so the section is named after its folder.
-    assert!(
-        sections.contains("- /documentation/search/: Search (1 page)"),
-        "{sections}"
-    );
-    assert_eq!(
-        pages,
-        "- Hybrid Queries: /documentation/search/hybrid-queries/. Fuse results."
-    );
+    assert!(h.markdown_requests().is_empty());
 }
 
 #[tokio::test]
 async fn list_docs_includes_other_sources_newest_first() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let overview = h.text("list_docs", json!({})).await;
     let blog = h.text("list_docs", json!({"section": "/blog/"})).await;
     assert!(overview.find("/documentation/search/") < overview.find("- /blog/: Blog (3 pages)"));
@@ -692,7 +702,7 @@ async fn list_docs_includes_other_sources_newest_first() {
 
 #[tokio::test]
 async fn list_docs_pages_through_long_sections() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let first = h
         .text("list_docs", json!({"section": "/blog/", "limit": 2}))
         .await;
@@ -722,7 +732,7 @@ async fn list_docs_pages_through_long_sections() {
 
 #[tokio::test]
 async fn search_returns_markdown_by_default() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let result = h
         .call(
             "search_docs",
@@ -735,14 +745,14 @@ async fn search_returns_markdown_by_default() {
          - Hybrid Search\n- Fusion\n\n\
          ## Filtering\n{base}/documentation/search/filtering/ (documentation, develop)\n\
          - Filter and search",
-        base = h.base()
+        base = SITE_URL
     );
     assert_eq!(text(&result), expected);
 }
 
 #[tokio::test]
 async fn search_without_results() {
-    let h = Harness::with_search(true, FixedSearch::default()).await;
+    let h = Harness::with_backend(FixedBackend::default()).await;
     let body = h.text("search_docs", json!({"query": "nothing"})).await;
     assert!(body.starts_with("No results."), "{body}");
     let result = h
@@ -753,7 +763,7 @@ async fn search_without_results() {
 
 #[tokio::test]
 async fn list_docs_as_json() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let sections = h.call("list_docs", json!({"format": "json"})).await;
     let sections = &sections.structured_content.unwrap()["sections"];
     let search = sections
@@ -797,7 +807,7 @@ async fn list_docs_as_json() {
 
 #[tokio::test]
 async fn search_snippets_in_markdown() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let body = h
         .text(
             "search_snippets",
@@ -805,7 +815,7 @@ async fn search_snippets_in_markdown() {
         )
         .await;
     assert_eq!(
-        *h.search.snippet_requests.lock().unwrap(),
+        *h.backend.snippet_requests.lock().unwrap(),
         [Some("python".to_string())]
     );
     // The same code on another page is left out.
@@ -816,21 +826,21 @@ async fn search_snippets_in_markdown() {
          ## New Post (python)\n{base}/blog/new-post/\n\n\
          Runs a hybrid query in python.\n\n\
          ````python\nprint(```)\n````",
-        base = h.base()
+        base = SITE_URL
     );
     assert_eq!(body, expected);
 }
 
 #[tokio::test]
 async fn search_snippets_as_json_in_all_languages() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     let result = h
         .call(
             "search_snippets",
             json!({"query": "hybrid query", "limit": 2, "format": "json"}),
         )
         .await;
-    assert_eq!(*h.search.snippet_requests.lock().unwrap(), [None]);
+    assert_eq!(*h.backend.snippet_requests.lock().unwrap(), [None]);
     let hits = results(&result);
     assert_eq!(
         hits[1],
@@ -839,7 +849,7 @@ async fn search_snippets_as_json_in_all_languages() {
             "code": "client.query(QueryPointsBuilder::new(\"c\")).await?;",
             "description": "Runs a hybrid query in rust.",
             "title": "Hybrid Queries",
-            "url": format!("{}/documentation/search/hybrid-queries/", h.base()),
+            "url": format!("{}/documentation/search/hybrid-queries/", SITE_URL),
         })
     );
     assert_eq!(hits.len(), 2);
@@ -847,7 +857,7 @@ async fn search_snippets_as_json_in_all_languages() {
 
 #[tokio::test]
 async fn search_snippets_only_from_served_sources() {
-    let h = Harness::serving(&["blog"], true, search_results()).await;
+    let h = Harness::serving(&["blog"], search_results()).await;
     let result = h
         .call(
             "search_snippets",
@@ -855,7 +865,7 @@ async fn search_snippets_only_from_served_sources() {
         )
         .await;
     let urls: Vec<Value> = results(&result).iter().map(|h| h["url"].clone()).collect();
-    assert_eq!(urls, [json!(format!("{}/blog/new-post/", h.base()))]);
+    assert_eq!(urls, [json!(format!("{}/blog/new-post/", SITE_URL))]);
 
     let empty = h
         .text(
@@ -868,7 +878,7 @@ async fn search_snippets_only_from_served_sources() {
 
 #[tokio::test]
 async fn format_is_a_plain_enum_argument() {
-    let h = Harness::new(true).await;
+    let h = Harness::new().await;
     for tool in h.client.list_all_tools().await.unwrap() {
         let format = &tool.input_schema["properties"]["format"];
         if tool.name == "get_page" {
@@ -881,14 +891,7 @@ async fn format_is_a_plain_enum_argument() {
 
 #[tokio::test]
 async fn get_page_reads_snippet_pages() {
-    let h = Harness::new(true).await;
-    Mock::given(method("GET"))
-        .and(path("/documentation/snippets/query-points/hybrid-rrf/index.md"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "# Code snippet: query-points/hybrid-rrf\n\n## Qdrant Server\n\n```go\nclient.Query()\n```\n",
-        ))
-        .mount(&h.site)
-        .await;
+    let h = Harness::new().await;
     // Snippet pages aren't in the page index, so there is no title.
     let body = h
         .text(
@@ -899,7 +902,7 @@ async fn get_page_reads_snippet_pages() {
     assert!(
         body.starts_with(&format!(
             "Source: {}/documentation/snippets/query-points/hybrid-rrf/",
-            h.base()
+            SITE_URL
         )),
         "{body}"
     );
