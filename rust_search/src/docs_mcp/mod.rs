@@ -6,4 +6,6 @@ pub mod config;
 pub mod library;
 mod server;
 
+#[cfg(test)]
+pub(crate) use server::tests::FixedBackend;
 pub use server::{Backend, DocsServer};

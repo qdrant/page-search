@@ -10,7 +10,11 @@ use serde_json::{json, Value};
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
+
 use super::*;
+use crate::docs_mcp::config::Config;
+use crate::docs_mcp::{Backend, DocsServer, FixedBackend};
 use crate::request_log::{self, ReplayToken};
 
 struct Harness {
@@ -71,7 +75,22 @@ impl Harness {
         );
         let log = web::Data::new(log);
         let token = web::Data::new(token);
+        // The real docs MCP server, with nothing to search, at /mcp/docs.
+        let docs = DocsServer::new(
+            Config {
+                sources: vec!["documentation".into()],
+            },
+            Backend::Fixed(std::sync::Arc::new(FixedBackend::default())),
+        );
         let server = HttpServer::new(move || {
+            let docs = docs.clone();
+            let mcp = StreamableHttpService::builder()
+                .service_factory(std::sync::Arc::new(move || Ok(docs.clone())))
+                .session_manager(std::sync::Arc::new(LocalSessionManager::default()))
+                .stateful_mode(false)
+                .json_response(true)
+                .allowed_hosts(vec!["127.0.0.1".to_string()])
+                .build();
             App::new()
                 .app_data(log.clone())
                 .app_data(token.clone())
@@ -79,6 +98,7 @@ impl Harness {
                 .route("/api/search", web::get().to(echo_search))
                 .route("/snippets/search", web::get().to(echo_search))
                 .route("/mcp", web::post().to(echo_mcp))
+                .service(mcp.scope_with_path("/mcp/docs"))
                 .configure(|cfg| panel.configure(cfg))
         })
         .workers(1)
@@ -364,7 +384,9 @@ async fn admins_see_snippet_search_reports() {
     let stats = h.json("/admin/api/snippets/stats?days=7", &cookie).await;
     assert_eq!(stats["total"], 5);
     assert_eq!(stats["without_language"], 1);
-    let languages = h.json("/admin/api/snippets/languages?days=7", &cookie).await;
+    let languages = h
+        .json("/admin/api/snippets/languages?days=7", &cookie)
+        .await;
     let languages: Vec<_> = languages
         .as_array()
         .unwrap()
@@ -418,5 +440,123 @@ async fn admins_see_snippet_search_reports() {
             .await
             .status(),
         StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+impl Harness {
+    /// Sends a JSON-RPC message to the real docs MCP server.
+    async fn mcp(&self, message: Value) -> Value {
+        self.client
+            .post(format!("{}/mcp/docs", self.base))
+            .header("accept", "application/json, text/event-stream")
+            .json(&message)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+}
+
+#[actix_web::test]
+async fn noise_and_protocol_requests_can_be_left_out() {
+    let h = Harness::start().await;
+    let callback = h
+        .sign_in(json!({"email": "ann@qdrant.com", "email_verified": true, "hd": "qdrant.com"}))
+        .await;
+    let cookie = cookie_of(&callback);
+
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}});
+    h.mcp(init).await;
+    // A tool the server doesn't have: a JSON-RPC error, with HTTP 200.
+    let unknown = h
+        .mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "search", "arguments": {"query": "filters"}}}))
+        .await;
+    assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+    // A tool that fails: a tool error, with HTTP 200.
+    let missing = h
+        .mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "get_page", "arguments": {"page": "/documentation/nope/"}}}))
+        .await;
+    assert_eq!(missing["result"]["isError"], true, "{missing}");
+    // A scanner, and a real search.
+    h.get("/api/search?q=%2E%2E%2F%2E%2E%2Fetc%2Fpasswd", None)
+        .await;
+    h.get("/api/search?q=hnsw", None).await;
+    wait_for_total(&h, &cookie, 5).await;
+
+    let requests = h.json("/admin/api/requests", &cookie).await;
+    let logged: Vec<_> = requests
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .map(|r| {
+            (
+                r["endpoint"].as_str().unwrap(),
+                r["category"].as_str().unwrap(),
+                r["status"].as_i64().unwrap(),
+                r["rpc_error"]
+                    .as_str()
+                    .map(|e| e.split(':').next().unwrap().to_string()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        logged,
+        [
+            ("mcp:initialize", "protocol", 200, None),
+            (
+                "mcp:search",
+                "unknown",
+                200,
+                Some("-32602 tool not found".into())
+            ),
+            ("mcp:get_page", "use", 200, Some("tool error".into())),
+            ("search", "scanner", 200, None),
+            ("search", "use", 200, None),
+        ]
+    );
+
+    let all = h.json("/admin/api/stats?days=7", &cookie).await;
+    assert_eq!(all["total"], 5);
+    assert_eq!(
+        (all["protocol"].as_i64(), all["noise"].as_i64()),
+        (Some(1), Some(2))
+    );
+    assert_eq!(all["noise_errors"], 1);
+    // Both MCP calls failed, though with HTTP 200.
+    assert_eq!(all["errors"], 2);
+    assert_eq!(all["mcp_tool_calls"], 1);
+    assert_eq!(all["mcp_sessions"], 1);
+
+    let clean = h
+        .json(
+            "/admin/api/stats?days=7&hide_protocol=true&hide_noise=true",
+            &cookie,
+        )
+        .await;
+    assert_eq!(clean["total"], 2);
+    assert_eq!(clean["errors"], 1);
+    let errors = h
+        .json(
+            "/admin/api/requests?hide_protocol=true&hide_noise=true&errors=true",
+            &cookie,
+        )
+        .await;
+    assert_eq!(errors.as_array().unwrap().len(), 1);
+    assert_eq!(errors[0]["endpoint"], "mcp:get_page");
+    let top = h
+        .json("/admin/api/top?days=7&hide_noise=true", &cookie)
+        .await;
+    assert!(
+        top.as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["query"] != "filters"),
+        "{top}"
     );
 }

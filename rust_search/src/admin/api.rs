@@ -10,6 +10,7 @@ use serde_json::json;
 use super::auth::Admin;
 use qdrant_client::Qdrant;
 
+use crate::request_log::queries::TrafficFilter;
 use crate::request_log::snippet_queries::{self, SnippetFilter, Sort, SortBy, Source};
 use crate::request_log::{now_ms, queries, ReplayToken, RequestFilter, RequestLog, REPLAY_HEADER};
 use crate::snippets;
@@ -57,6 +58,24 @@ pub async fn me(admin: Admin) -> HttpResponse {
 pub struct Range {
     days: Option<u32>,
     endpoint: Option<String>,
+    #[serde(default)]
+    hide_protocol: bool,
+    #[serde(default)]
+    hide_noise: bool,
+    #[serde(default)]
+    errors: bool,
+}
+
+/// What the traffic view leaves out, from the query parameters
+/// `hide_protocol`, `hide_noise` and `errors`.
+macro_rules! traffic_filter {
+    ($q:expr) => {
+        TrafficFilter {
+            hide_protocol: $q.hide_protocol,
+            hide_noise: $q.hide_noise,
+            errors_only: $q.errors,
+        }
+    };
 }
 
 #[get("/api/stats")]
@@ -66,7 +85,8 @@ pub async fn stats(
     q: Query<Range>,
 ) -> actix_web::Result<HttpResponse> {
     let since = since(q.days);
-    let stats = read(&log, move |c| queries::stats(c, since)).await?;
+    let traffic = traffic_filter!(q);
+    let stats = read(&log, move |c| queries::stats(c, since, traffic)).await?;
     Ok(HttpResponse::Ok().json(stats))
 }
 
@@ -77,9 +97,10 @@ pub async fn top(
     q: Query<Range>,
 ) -> actix_web::Result<HttpResponse> {
     let since = since(q.days);
+    let traffic = traffic_filter!(q);
     let endpoint = q.into_inner().endpoint.filter(|e| !e.is_empty());
     let top = read(&log, move |c| {
-        queries::top_queries(c, since, endpoint.as_deref(), 50)
+        queries::top_queries(c, since, endpoint.as_deref(), traffic, 50)
     })
     .await?;
     Ok(HttpResponse::Ok().json(top))
@@ -91,6 +112,12 @@ pub struct ListQuery {
     endpoint: Option<String>,
     contains: Option<String>,
     before: Option<i64>,
+    #[serde(default)]
+    hide_protocol: bool,
+    #[serde(default)]
+    hide_noise: bool,
+    #[serde(default)]
+    errors: bool,
 }
 
 #[get("/api/requests")]
@@ -106,6 +133,7 @@ pub async fn requests(
         contains: q.contains.filter(|c| !c.is_empty()),
         before_id: q.before,
         limit: 50,
+        traffic: traffic_filter!(q),
     };
     let list = read(&log, move |c| queries::list(c, &filter)).await?;
     Ok(HttpResponse::Ok().json(list))

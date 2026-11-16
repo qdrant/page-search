@@ -5,8 +5,9 @@ use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 
+use super::queries::IS_NOISE;
 use super::store::{row_to_record, RequestRecord};
-use super::{MCP_SNIPPETS_ENDPOINT, SNIPPETS_ENDPOINT};
+use super::{IS_ERROR, MCP_SNIPPETS_ENDPOINT, SNIPPETS_ENDPOINT};
 use crate::snippets::normalize_language;
 
 /// Where a snippet search came from.
@@ -67,7 +68,8 @@ pub struct SnippetFilter {
 impl SnippetFilter {
     /// The `WHERE` clause and its values.
     fn clause(&self) -> (String, Vec<Value>) {
-        let mut sql = "ts >= ?".to_string();
+        // Scanners' payloads say nothing about snippet search.
+        let mut sql = format!("ts >= ? AND NOT {IS_NOISE}");
         let mut values: Vec<Value> = vec![self.since.into()];
         match self.source {
             Some(source) => {
@@ -89,7 +91,7 @@ impl SnippetFilter {
             values.push(text.clone().into());
         }
         if self.errors_only {
-            sql.push_str(" AND status >= 400");
+            sql.push_str(&format!(" AND {IS_ERROR}"));
         }
         (sql, values)
     }
@@ -157,7 +159,7 @@ pub fn stats(conn: &Connection, filter: &SnippetFilter) -> rusqlite::Result<Snip
 
     let (total, errors, without_language, distinct_queries) = conn.query_row(
         &format!(
-            "SELECT COUNT(*), IFNULL(SUM(status >= 400), 0), IFNULL(SUM(IFNULL(language, '') = ''), 0),
+            "SELECT COUNT(*), IFNULL(SUM({IS_ERROR}), 0), IFNULL(SUM(IFNULL(language, '') = ''), 0),
                     COUNT(DISTINCT lower(query))
              FROM requests WHERE {clause}"
         ),
@@ -167,7 +169,7 @@ pub fn stats(conn: &Connection, filter: &SnippetFilter) -> rusqlite::Result<Snip
 
     let mut sources = conn
         .prepare(&format!(
-            "SELECT endpoint, COUNT(*), SUM(status >= 400), AVG(duration_ms)
+            "SELECT endpoint, COUNT(*), SUM({IS_ERROR}), AVG(duration_ms)
              FROM requests WHERE {clause} GROUP BY endpoint ORDER BY COUNT(*) DESC"
         ))?
         .query_map(params_from_iter(values.iter()), |row| {
@@ -235,7 +237,7 @@ pub fn languages(conn: &Connection, since: i64) -> rusqlite::Result<Vec<Language
     let (clause, values) = filter.clause();
     conn.prepare(&format!(
         "SELECT IFNULL(language, ''), endpoint, COUNT(*), COUNT(DISTINCT lower(query)),
-                SUM(status >= 400), AVG(duration_ms), MAX(ts)
+                SUM({IS_ERROR}), AVG(duration_ms), MAX(ts)
          FROM requests WHERE {clause}
          GROUP BY 1, endpoint ORDER BY COUNT(*) DESC"
     ))?
@@ -266,7 +268,7 @@ pub fn top_queries(
     let (clause, mut values) = filter.clause();
     values.push(i64::from(limit).into());
     conn.prepare(&format!(
-        "SELECT query, IFNULL(language, ''), endpoint, COUNT(*) AS c, SUM(status >= 400), MAX(id) AS last
+        "SELECT query, IFNULL(language, ''), endpoint, COUNT(*) AS c, SUM({IS_ERROR}), MAX(id) AS last
          FROM requests WHERE {clause} AND query IS NOT NULL AND query != ''
          GROUP BY lower(query), 2, endpoint ORDER BY c DESC, last DESC LIMIT ?"
     ))?
