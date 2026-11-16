@@ -192,6 +192,9 @@ h3 .meta { color: var(--ink-2); font-weight: 400; }
 .dbg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
 .dbg-col h3 { margin-bottom: 4px; }
 .dbg-col .why { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.dbg-col[hidden] { display: none; }
+.dbg-show { display: flex; gap: 6px 14px; align-items: center; flex-wrap: wrap; margin-top: 10px; color: var(--ink-2); font-size: 13px; }
+.dbg-show label { display: inline-flex; gap: 6px; align-items: center; }
 .hit { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--page); }
 .hit.hl { outline: 2px solid var(--accent); outline-offset: -1px; }
 .hit .top { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
@@ -415,6 +418,11 @@ th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
           <button type="submit">Search</button>
         </form>
         <datalist id="dbg-languages"></datalist>
+        <div class="dbg-show" id="dbg-show">
+          <span>Beside the results, show:</span>
+          <label title="The dense half alone: the query's embedding against the descriptions"><input type="checkbox" data-col="dense"> Dense</label>
+          <label title="The sparse half alone: BM25 of the query against the code"><input type="checkbox" data-col="sparse"> Sparse</label>
+        </div>
         <div id="dbg-out"><p class="empty">Enter a query, or select a top query on the Searches tab.</p></div>
       </section>
     </section>
@@ -1015,7 +1023,7 @@ async function runDebug() {
   const dupes = [...sameCode.values()].filter(n => n > 1).reduce((s, n) => s + n - 1, 0);
   if (dupes) meta.push(`${dupes} repeat code already in the results; the MCP server leaves those out`);
 
-  const column = (title, why, list, badges) => el("div", { class: "dbg-col" },
+  const column = (col, title, why, list, badges) => el("div", { class: "dbg-col", "data-col": col },
     el("h3", {}, title, el("span", { class: "meta" }, `${list.length}`)),
     el("p", { class: "why" }, why),
     list.length ? list.map((h, i) => hitCard(h, i + 1, badges(h))) : el("p", { class: "empty" }, "Nothing found."));
@@ -1023,12 +1031,29 @@ async function runDebug() {
   $("dbg-out").replaceChildren(
     el("div", { class: "dbg-meta" }, meta.join(" · ")),
     el("div", { class: "dbg-cols" },
-      column("Results", "Reciprocal rank fusion of both halves, as /snippets/search and the MCP server run it.", res.fused,
+      column("fused", "Results", "Reciprocal rank fusion of both halves, as /snippets/search and the MCP server run it.", res.fused,
         (h) => [rank(denseRank, h.id, "dense"), rank(sparseRank, h.id, "sparse")]),
-      column("Dense", "The query's embedding against the descriptions.", res.dense,
+      column("dense", "Dense", "The query's embedding against the descriptions.", res.dense,
         (h) => [fusedRank.has(h.id) ? el("span", { class: "badge" }, `result #${fusedRank.get(h.id)}`) : null]),
-      column("Sparse", "BM25 of the query against the code.", res.sparse,
+      column("sparse", "Sparse", "BM25 of the query against the code.", res.sparse,
         (h) => [fusedRank.has(h.id) ? el("span", { class: "badge" }, `result #${fusedRank.get(h.id)}`) : null])));
+  showDebugColumns();
+}
+
+// Only the results show unless the halves are asked for; the choice is
+// remembered in this browser.
+const debugColumns = new Set();
+try { for (const c of JSON.parse(localStorage.getItem("admin-dbg-cols") || "[]")) debugColumns.add(c); } catch {}
+for (const box of $("dbg-show").querySelectorAll("input[data-col]")) {
+  box.checked = debugColumns.has(box.dataset.col);
+  box.addEventListener("change", () => {
+    if (box.checked) debugColumns.add(box.dataset.col); else debugColumns.delete(box.dataset.col);
+    try { localStorage.setItem("admin-dbg-cols", JSON.stringify([...debugColumns])); } catch {}
+    showDebugColumns();
+  });
+}
+function showDebugColumns() {
+  for (const col of document.querySelectorAll("#dbg-out .dbg-col")) col.hidden = col.dataset.col !== "fused" && !debugColumns.has(col.dataset.col);
 }
 
 // ---- Code highlighting ----
@@ -1107,7 +1132,7 @@ function hitCard(h, rank, badges) {
       el("span", { class: "score" }, `${h.package_name} ${h.version}`)),
     el("div", { class: "src" }, url ? el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, url) : (h.source?.url || ""), lines),
     h.description ? el("div", { class: "desc" }, h.description) : el("div", { class: "desc sub-note" }, "No description."),
-    el("details", {}, el("summary", {}, (() => { const n = h.code.split("\n").length; return `Code (${n} ${n === 1 ? "line" : "lines"})`; })()), el("pre", {}, highlight(h.code, h.language))));
+    el("details", { open: true }, el("summary", {}, (() => { const n = h.code.split("\n").length; return `Code (${n} ${n === 1 ? "line" : "lines"})`; })()), el("pre", {}, highlight(h.code, h.language))));
   // Opening or closing the code opens or closes it for the same snippet in
   // the other columns. Setting `open` to what it already is fires no event.
   const code = card.querySelector("details");
