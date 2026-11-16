@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::auth::Admin;
+use super::config::AdminConfig;
 use qdrant_client::Qdrant;
 
 use crate::request_log::queries::TrafficFilter;
@@ -165,6 +166,7 @@ struct Replay {
 #[get("/api/requests/{id}/replay")]
 pub async fn replay(
     _: Admin,
+    config: Data<AdminConfig>,
     log: Data<RequestLog>,
     target: Data<ReplayTarget>,
     http: Data<reqwest::Client>,
@@ -193,6 +195,12 @@ pub async fn replay(
                 "application/json, text/event-stream",
             )
             .header(reqwest::header::CONTENT_TYPE, "application/json");
+    } else if let Some((scheme, host)) = config.public_url.split_once("://") {
+        // The service builds links from the host it was called at; make
+        // them point at the public address, not at loopback.
+        request = request
+            .header("X-Forwarded-Proto", scheme)
+            .header("X-Forwarded-Host", host);
     }
     if let Some(body) = record.body {
         request = request.body(body);
