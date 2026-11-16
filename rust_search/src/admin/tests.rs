@@ -77,6 +77,7 @@ impl Harness {
                 .app_data(token.clone())
                 .wrap(middleware::from_fn(request_log::log_requests))
                 .route("/api/search", web::get().to(echo_search))
+                .route("/snippets/search", web::get().to(echo_search))
                 .route("/mcp", web::post().to(echo_mcp))
                 .configure(|cfg| panel.configure(cfg))
         })
@@ -322,5 +323,100 @@ async fn admins_see_stats_and_replay_requests() {
     assert_eq!(
         h.get("/admin/api/me", Some(&cleared)).await.status(),
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[actix_web::test]
+async fn admins_see_snippet_search_reports() {
+    let h = Harness::start().await;
+    let callback = h
+        .sign_in(json!({"email": "ann@qdrant.com", "email_verified": true, "hd": "qdrant.com"}))
+        .await;
+    let cookie = cookie_of(&callback);
+    assert_eq!(
+        h.get("/admin/api/snippets/stats", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    for language in ["python", "python", "py"] {
+        h.get(
+            &format!("/snippets/search?query=upsert&language={language}"),
+            None,
+        )
+        .await;
+    }
+    for arguments in [
+        json!({"query": "filters", "language": "ts"}),
+        json!({"query": "filters"}),
+    ] {
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "search_snippets", "arguments": arguments}});
+        h.client
+            .post(format!("{}/mcp", h.base))
+            .json(&call)
+            .send()
+            .await
+            .unwrap();
+    }
+    h.get("/api/search?q=upsert", None).await;
+    wait_for_total(&h, &cookie, 6).await;
+
+    let stats = h.json("/admin/api/snippets/stats?days=7", &cookie).await;
+    assert_eq!(stats["total"], 5);
+    assert_eq!(stats["without_language"], 1);
+    let languages = h.json("/admin/api/snippets/languages?days=7", &cookie).await;
+    let languages: Vec<_> = languages
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["language"].as_str().unwrap(),
+                l["source"].as_str().unwrap(),
+                l["searched_as"].as_str().unwrap(),
+                l["count"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(languages[0], ("python", "rest", "python", 2));
+    assert!(languages.contains(&("ts", "mcp", "typescript", 1)));
+    assert!(languages.contains(&("", "mcp", "", 1)));
+
+    let mcp = h
+        .json("/admin/api/snippets/stats?days=7&source=mcp", &cookie)
+        .await;
+    assert_eq!(mcp["total"], 2);
+
+    let none = h
+        .json("/admin/api/snippets/requests?language=-", &cookie)
+        .await;
+    assert_eq!(none.as_array().unwrap().len(), 1);
+    assert_eq!(none[0]["endpoint"], "mcp:search_snippets");
+    assert_eq!(none[0]["language"], "");
+
+    let top = h.json("/admin/api/snippets/top?source=rest", &cookie).await;
+    assert_eq!(top[0]["query"], "upsert");
+    assert_eq!(top[0]["language"], "python");
+    assert_eq!(top[0]["count"], 2);
+    let detail = h
+        .json(
+            &format!("/admin/api/requests/{}", top[0]["last_id"]),
+            &cookie,
+        )
+        .await;
+    assert_eq!(detail["language"], "python");
+
+    // Without Qdrant, the index and the debugger are unavailable.
+    assert_eq!(
+        h.get("/admin/api/snippets/index", Some(&cookie))
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        h.get("/admin/api/snippets/search?query=upsert", Some(&cookie))
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
     );
 }

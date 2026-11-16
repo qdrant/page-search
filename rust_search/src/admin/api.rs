@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::auth::Admin;
+use qdrant_client::Qdrant;
+
+use crate::request_log::snippet_queries::{self, SnippetFilter, Sort, SortBy, Source};
 use crate::request_log::{now_ms, queries, ReplayToken, RequestFilter, RequestLog, REPLAY_HEADER};
+use crate::snippets;
 
 /// The longest stretch the panel shows, matching the log's retention.
 const MAX_DAYS: u32 = 90;
@@ -191,5 +195,185 @@ pub async fn replay(
         duration_ms,
         body,
         truncated,
+    }))
+}
+
+// ---- Snippet search reports ----
+
+#[derive(Deserialize)]
+pub struct SnippetQuery {
+    days: Option<u32>,
+    /// `rest` or `mcp`.
+    source: Option<String>,
+    /// The language as requested; `-` for searches without one.
+    language: Option<String>,
+    contains: Option<String>,
+    #[serde(default)]
+    errors: bool,
+    /// For the request list: `time`, `source`, `language`, `query`,
+    /// `status` or `duration`.
+    sort: Option<String>,
+    /// For the request list: `asc` or `desc`, the default.
+    order: Option<String>,
+    /// For the request list: how many requests to skip.
+    #[serde(default)]
+    offset: u32,
+}
+
+/// Searches without a language, in the `language` parameter.
+const NO_LANGUAGE: &str = "-";
+
+impl SnippetQuery {
+    fn sort(&self) -> Sort {
+        Sort {
+            by: self
+                .sort
+                .as_deref()
+                .and_then(SortBy::parse)
+                .unwrap_or_default(),
+            ascending: self.order.as_deref() == Some("asc"),
+        }
+    }
+
+    fn filter(self) -> SnippetFilter {
+        SnippetFilter {
+            since: since(self.days),
+            source: self.source.as_deref().and_then(Source::parse),
+            language: self.language.filter(|l| !l.is_empty()).map(|l| {
+                if l == NO_LANGUAGE {
+                    String::new()
+                } else {
+                    l
+                }
+            }),
+            contains: self.contains.filter(|c| !c.is_empty()),
+            errors_only: self.errors,
+        }
+    }
+}
+
+#[get("/api/snippets/stats")]
+pub async fn snippet_stats(
+    _: Admin,
+    log: Data<RequestLog>,
+    q: Query<SnippetQuery>,
+) -> actix_web::Result<HttpResponse> {
+    let filter = q.into_inner().filter();
+    let report = read(&log, move |c| snippet_queries::stats(c, &filter)).await?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+/// Searches by requested language and source, whatever the other filters.
+#[get("/api/snippets/languages")]
+pub async fn snippet_languages(
+    _: Admin,
+    log: Data<RequestLog>,
+    q: Query<Range>,
+) -> actix_web::Result<HttpResponse> {
+    let since = since(q.days);
+    let rows = read(&log, move |c| snippet_queries::languages(c, since)).await?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+#[get("/api/snippets/top")]
+pub async fn snippet_top(
+    _: Admin,
+    log: Data<RequestLog>,
+    q: Query<SnippetQuery>,
+) -> actix_web::Result<HttpResponse> {
+    let filter = q.into_inner().filter();
+    let rows = read(&log, move |c| snippet_queries::top_queries(c, &filter, 50)).await?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+#[get("/api/snippets/requests")]
+pub async fn snippet_requests(
+    _: Admin,
+    log: Data<RequestLog>,
+    q: Query<SnippetQuery>,
+) -> actix_web::Result<HttpResponse> {
+    let q = q.into_inner();
+    let (sort, offset) = (q.sort(), q.offset);
+    let filter = q.filter();
+    let list = read(&log, move |c| {
+        snippet_queries::list(c, &filter, sort, offset, 50)
+    })
+    .await?;
+    Ok(HttpResponse::Ok().json(list))
+}
+
+fn qdrant_or_unavailable(qdrant: Option<Data<Qdrant>>) -> actix_web::Result<Data<Qdrant>> {
+    qdrant.ok_or_else(|| actix_web::error::ErrorServiceUnavailable("Qdrant is not configured"))
+}
+
+fn qdrant_error(e: anyhow::Error) -> actix_web::Error {
+    log::error!("Snippet debugging query failed: {e}");
+    actix_web::error::ErrorBadGateway(format!("Qdrant query failed: {e}"))
+}
+
+/// What the snippet collection holds, to compare with what's searched for.
+#[get("/api/snippets/index")]
+pub async fn snippet_index(
+    _: Admin,
+    qdrant: Option<Data<Qdrant>>,
+) -> actix_web::Result<HttpResponse> {
+    let qdrant = qdrant_or_unavailable(qdrant)?;
+    let overview = snippets::index_overview(&qdrant)
+        .await
+        .map_err(qdrant_error)?;
+    Ok(HttpResponse::Ok().json(overview))
+}
+
+#[derive(Deserialize)]
+pub struct DebugSearch {
+    query: String,
+    language: Option<String>,
+    limit: Option<u64>,
+    /// Normalize the language as the MCP server does.
+    #[serde(default)]
+    normalize: bool,
+}
+
+#[derive(Serialize)]
+struct DebugSearchResult {
+    /// The language the index was filtered by, if any.
+    searched_as: Option<String>,
+    duration_ms: f64,
+    #[serde(flatten)]
+    breakdown: snippets::SearchBreakdown,
+}
+
+/// Runs a snippet search, and each half of the hybrid search on its own.
+#[get("/api/snippets/search")]
+pub async fn snippet_search(
+    _: Admin,
+    qdrant: Option<Data<Qdrant>>,
+    q: Query<DebugSearch>,
+) -> actix_web::Result<HttpResponse> {
+    let qdrant = qdrant_or_unavailable(qdrant)?;
+    let q = q.into_inner();
+    let query = q.query.trim();
+    if query.is_empty() {
+        return Err(actix_web::error::ErrorBadRequest("The query is empty"));
+    }
+    let searched_as = q
+        .language
+        .map(|l| {
+            if q.normalize {
+                snippets::normalize_language(&l)
+            } else {
+                l
+            }
+        })
+        .filter(|l| !l.is_empty());
+    let limit = q.limit.unwrap_or(5).clamp(1, 50);
+    let start = Instant::now();
+    let breakdown = snippets::search_breakdown(&qdrant, query, searched_as.as_deref(), limit)
+        .await
+        .map_err(qdrant_error)?;
+    Ok(HttpResponse::Ok().json(DebugSearchResult {
+        searched_as,
+        duration_ms: start.elapsed().as_secs_f64() * 1000.0,
+        breakdown,
     }))
 }

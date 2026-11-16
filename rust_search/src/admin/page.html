@@ -23,7 +23,15 @@
   --s-skills: #1baf7a;
   --s-snippets: #eda100;
   --s-mcp: #e87ba4;
+  --s-violet: #8a63d2;
   --s-other: #898781;
+  --warn-bg: rgba(237, 161, 0, 0.14);
+  --code-keyword: #8b2fc9;
+  --code-string: #2b7a3d;
+  --code-comment: #6f6e69;
+  --code-number: #b35900;
+  --code-function: #1f5fbf;
+  --code-property: #a8322d;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -42,6 +50,13 @@
     --s-skills: #199e70;
     --s-snippets: #c98500;
     --s-mcp: #d55181;
+    --s-violet: #9b7be0;
+    --code-keyword: #c792ea;
+    --code-string: #9ccc8f;
+    --code-comment: #8f8e88;
+    --code-number: #f2a65a;
+    --code-function: #82aaff;
+    --code-property: #f28b82;
   }
 }
 :root[data-theme="dark"] {
@@ -60,6 +75,13 @@
   --s-skills: #199e70;
   --s-snippets: #c98500;
   --s-mcp: #d55181;
+  --s-violet: #9b7be0;
+  --code-keyword: #c792ea;
+  --code-string: #9ccc8f;
+  --code-comment: #8f8e88;
+  --code-number: #f2a65a;
+  --code-function: #82aaff;
+  --code-property: #f28b82;
 }
 * { box-sizing: border-box; }
 body {
@@ -97,7 +119,8 @@ button:hover { background: var(--hover); }
 .tile .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
 .tile .sub { color: var(--muted); font-size: 12px; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 860px) { .two { grid-template-columns: 1fr; } }
+.two.wide-left { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+@media (max-width: 860px) { .two, .two.wide-left { grid-template-columns: 1fr; } }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-bottom: 8px; }
 .legend span::before {
   content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
@@ -151,17 +174,91 @@ pre {
 h3 { font-size: 13px; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 h3 .meta { color: var(--ink-2); font-weight: 400; }
 .err { color: var(--critical); }
+.tabs { display: flex; gap: 4px; }
+.tabs button { border-color: transparent; background: transparent; color: var(--ink-2); }
+.tabs button[aria-selected="true"] { background: var(--hover); color: var(--ink); border-color: var(--border); font-weight: 600; }
+.filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.filters label { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-2); }
+.sub-note { color: var(--muted); font-weight: 400; font-size: 12px; }
+.badge {
+  display: inline-block; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; font-weight: 400;
+}
+.badge.warn { background: var(--warn-bg); color: var(--ink); border-color: transparent; }
+.badge.ok { color: var(--ink-2); }
+.dbg-form { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1.2fr) 70px auto auto; gap: 8px; align-items: center; }
+@media (max-width: 860px) { .dbg-form { grid-template-columns: 1fr 1fr; } .dbg-form input[name="query"] { grid-column: 1 / -1; } }
+.dbg-meta { color: var(--ink-2); font-size: 12px; margin: 12px 0 8px; }
+.dbg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.dbg-col h3 { margin-bottom: 4px; }
+.dbg-col .why { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.hit { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--page); }
+.hit.hl { outline: 2px solid var(--accent); outline-offset: -1px; }
+.hit .top { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
+.hit .rank { font-weight: 600; font-variant-numeric: tabular-nums; }
+.hit .score { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.hit .src { font-size: 12px; overflow-wrap: anywhere; margin-top: 4px; }
+.hit .src a { color: var(--accent); }
+.hit .desc { margin-top: 4px; font-size: 13px; }
+.hit details { margin-top: 6px; }
+.hit summary { cursor: pointer; color: var(--ink-2); font-size: 12px; }
+.hit pre { max-height: 320px; margin-top: 6px; tab-size: 4; }
+.tok-k { color: var(--code-keyword); }
+.tok-s { color: var(--code-string); }
+.tok-c { color: var(--code-comment); font-style: italic; }
+.tok-n { color: var(--code-number); }
+.tok-f { color: var(--code-function); }
+.tok-p { color: var(--code-property); }
+.group { display: grid; gap: 16px; }
+.group[hidden] { display: none; }
+.subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.subtabs button {
+  border: 0; border-radius: 0; background: none; color: var(--ink-2); padding: 8px 14px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; gap: 6px; align-items: center;
+}
+.subtabs button:hover { color: var(--ink); background: var(--hover); }
+.subtabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.subtabs .badge { font-weight: 400; }
+.group-head { display: flex; gap: 8px 12px; align-items: baseline; flex-wrap: wrap; margin-top: 8px; }
+.group-head h2 { font-size: 17px; margin: 0; }
+.scope { color: var(--muted); font-size: 12px; }
+.framed { border: 1px solid var(--border); border-radius: 14px; padding: 0 12px 12px; }
+.scope-bar {
+  position: sticky; top: 0; z-index: 3; margin: 0 -12px; padding: 10px 12px;
+  background: var(--page); border-bottom: 1px solid var(--border); border-radius: 14px 14px 0 0;
+  display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap;
+}
+.scope-bar h2 { font-size: 17px; margin: 0 4px 0 0; }
+.chip {
+  font-size: 12px; padding: 1px 8px; border-radius: 999px; margin: 0 4px 4px 0;
+  border: 1px solid var(--border); background: var(--page); color: var(--ink);
+}
+.chip b { font-weight: 400; color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+th .sort {
+  font: inherit; color: inherit; background: none; border: 0; border-radius: 4px; padding: 0 2px; margin: 0 -2px;
+  cursor: pointer; display: inline-flex; gap: 3px; align-items: center; white-space: nowrap;
+}
+th .sort:hover { color: var(--ink); background: var(--hover); }
+th .sort::after { content: "↕"; opacity: .35; font-size: 11px; }
+th[aria-sort="ascending"] .sort, th[aria-sort="descending"] .sort { color: var(--ink); font-weight: 600; }
+th[aria-sort="ascending"] .sort::after { content: "↑"; opacity: 1; }
+th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
 </style>
 </head>
 <body>
 <header>
   <h1>Site Search Admin</h1>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-traffic" data-view="traffic" aria-selected="true">Traffic</button>
+    <button role="tab" id="tab-snippets" data-view="snippets" aria-selected="false">Snippets</button>
+  </nav>
   <span class="who" id="who"></span>
   <form method="post" action="/admin/logout"><button type="submit">Sign Out</button></form>
 </header>
 <main>
+  <div id="view-traffic" style="display:grid;gap:16px">
   <div class="toolbar">
-    <div class="seg" role="group" aria-label="Time Range" id="range">
+    <div class="seg range" role="group" aria-label="Time Range">
       <button data-days="1">24 hours</button>
       <button data-days="7">7 days</button>
       <button data-days="30">30 days</button>
@@ -169,7 +266,6 @@ h3 .meta { color: var(--ink-2); font-weight: 400; }
     </div>
     <span class="note">Days are in UTC. Requests are kept for 90 days.</span>
   </div>
-
   <div class="tiles">
     <div class="card tile"><div class="label">Requests</div><div class="value" id="t-total">-</div><div class="sub" id="t-total-sub"></div></div>
     <div class="card tile"><div class="label">MCP Tool Calls</div><div class="value" id="t-mcp">-</div><div class="sub" id="t-mcp-sub"></div></div>
@@ -213,11 +309,122 @@ h3 .meta { color: var(--ink-2); font-weight: 400; }
       <button class="more" id="more" hidden>Load More</button>
     </section>
   </div>
+  </div>
+
+  <div id="view-snippets" style="display:none;gap:16px">
+    <nav class="subtabs" role="tablist" aria-label="Snippet Views">
+      <button role="tab" data-sub="coverage" aria-controls="cov-group">Language Coverage <span class="badge warn" id="cov-tab-badge" hidden></span></button>
+      <button role="tab" data-sub="searches" aria-controls="sn-group">Searches <span class="badge" id="sn-tab-badge" hidden></span></button>
+      <button role="tab" data-sub="debugger" aria-controls="dbg">Search Debugger</button>
+    </nav>
+
+    <section class="group" id="cov-group" role="tabpanel" data-sub="coverage" aria-label="Language Coverage">
+      <div class="group-head" style="align-items:center">
+        <div class="seg range" role="group" aria-label="Time Range for Language Coverage">
+      <button data-days="1">24 hours</button>
+      <button data-days="7">7 days</button>
+      <button data-days="30">30 days</button>
+      <button data-days="90">90 days</button>
+    </div>
+        <span class="scope">Searches in this range, next to what the snippet index holds now. Days are in UTC.</span>
+      </div>
+      <div class="tiles">
+        <div class="card tile"><div class="label">Snippets in the Index</div><div class="value" id="cov-total">-</div><div class="sub" id="cov-total-sub"></div></div>
+        <div class="card tile"><div class="label">Searches for Languages Not in the Index</div><div class="value" id="cov-missing">-</div><div class="sub" id="cov-missing-sub"></div></div>
+        <div class="card tile"><div class="label">Indexed Languages Never Searched</div><div class="value" id="cov-unused">-</div><div class="sub" id="cov-unused-sub"></div></div>
+      </div>
+      <section class="card">
+        <h2>Languages <span class="sub-note">One row per language the index is filtered by. "Requested As" lists what searches sent: select one to see those searches.</span></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Language</th><th class="num">Snippets</th><th class="num">Share</th><th class="num">Searches</th><th class="num">MCP</th><th class="num">/snippets/search</th><th class="num">Errors</th><th>Requested As</th></tr></thead>
+          <tbody id="cov-languages"></tbody>
+        </table></div>
+        <div class="sub-note" id="cov-versions" style="margin-top:8px"></div>
+      </section>
+    </section>
+
+    <section class="group framed" id="sn-group" role="tabpanel" data-sub="searches" aria-label="Snippet Searches" hidden>
+      <div class="scope-bar">
+        <div class="seg range" role="group" aria-label="Time Range for Searches">
+      <button data-days="1">24 hours</button>
+      <button data-days="7">7 days</button>
+      <button data-days="30">30 days</button>
+      <button data-days="90">90 days</button>
+    </div>
+        <div class="seg" role="group" aria-label="Source" id="sn-source">
+          <button data-source="" aria-pressed="true">All Sources</button>
+          <button data-source="rest" aria-pressed="false">/snippets/search</button>
+          <button data-source="mcp" aria-pressed="false">MCP</button>
+        </div>
+        <select id="sn-language" aria-label="Language"></select>
+        <input id="sn-search" type="search" placeholder="Filter queries" aria-label="Filter Queries" size="16">
+        <label class="filters"><input type="checkbox" id="sn-errors"> Only errors</label>
+        <button id="sn-clear">Clear Filters</button>
+        <span class="scope" style="margin-left:auto">These filters apply to everything on this tab. Days are in UTC.</span>
+      </div>
+
+      <div class="tiles">
+        <div class="card tile"><div class="label">Searches</div><div class="value" id="sn-total">-</div><div class="sub" id="sn-total-sub"></div></div>
+        <div class="card tile"><div class="label">Without a Language</div><div class="value" id="sn-nolang">-</div><div class="sub" id="sn-nolang-sub"></div></div>
+        <div class="card tile"><div class="label">Errors</div><div class="value" id="sn-err">-</div><div class="sub" id="sn-err-sub"></div></div>
+        <div class="card tile"><div class="label">p95 Latency</div><div class="value" id="sn-p95">-</div><div class="sub" id="sn-p95-sub"></div></div>
+      </div>
+
+      <section class="card">
+        <h2>Searches per Day by Requested Language</h2>
+        <div class="legend" id="sn-legend"></div>
+        <div class="chart" id="sn-chart"><div class="tip" id="sn-tip"></div></div>
+      </section>
+
+      <div class="two">
+        <section class="card">
+          <h2>Top Queries <span class="sub-note">Select one to debug it.</span></h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Query</th><th>Language</th><th>Source</th><th class="num">Count</th></tr></thead>
+            <tbody id="sn-top"></tbody>
+          </table></div>
+        </section>
+        <section class="card">
+          <h2>Requests <span class="sub-note">Select a column to sort, a row to see and replay it.</span></h2>
+          <div class="table-wrap"><table>
+            <thead><tr id="sn-req-head">
+              <th data-sort="time"><button class="sort" type="button">Time</button></th>
+              <th data-sort="source"><button class="sort" type="button">Source</button></th>
+              <th data-sort="language"><button class="sort" type="button">Language</button></th>
+              <th data-sort="query"><button class="sort" type="button">Query</button></th>
+              <th class="num" data-sort="status"><button class="sort" type="button">Status</button></th>
+              <th class="num" data-sort="duration"><button class="sort" type="button">ms</button></th>
+            </tr></thead>
+            <tbody id="sn-requests"></tbody>
+          </table></div>
+          <button class="more" id="sn-more" hidden>Load More</button>
+        </section>
+      </div>
+    </section>
+
+    <section class="group" id="dbg" role="tabpanel" data-sub="debugger" aria-label="Search Debugger" hidden>
+      <div class="group-head">
+        <span class="scope">Runs a snippet search on the index as it is now, and each half of the hybrid search on its own.</span>
+      </div>
+      <section class="card">
+        <form class="dbg-form" id="dbg-form">
+          <input name="query" type="search" placeholder="What the code should do" aria-label="Query" required>
+          <input name="language" list="dbg-languages" placeholder="Any language" aria-label="Language">
+          <input name="limit" type="number" min="1" max="50" value="5" aria-label="Limit">
+          <label title="Map py, ts, golang and the like to the index's names, as the MCP server does"><input type="checkbox" name="normalize" checked> Normalize like MCP</label>
+          <button type="submit">Search</button>
+        </form>
+        <datalist id="dbg-languages"></datalist>
+        <div id="dbg-out"><p class="empty">Enter a query, or select a top query on the Searches tab.</p></div>
+      </section>
+    </section>
+  </div>
 </main>
 
 <dialog id="detail" aria-labelledby="detail-title">
   <div class="dlg-head">
     <h2 id="detail-title">Request</h2>
+    <button id="detail-debug" hidden>Debug Search</button>
     <button id="replay-again">Run Again</button>
     <button id="detail-close" aria-label="Close">Close</button>
   </div>
@@ -260,7 +467,7 @@ async function api(path) {
   return res.json();
 }
 
-const state = { days: 30, reqBefore: null };
+const state = { days: 30, reqBefore: null, view: "traffic", sub: "coverage" };
 try { const d = Number(localStorage.getItem("admin-days")); if ([1, 7, 30, 90].includes(d)) state.days = d; } catch {}
 
 function endpointCell(ep) {
@@ -311,11 +518,16 @@ async function loadStats() {
 
 function utcDay(t) { return new Date(t).toISOString().slice(0, 10); }
 
-function drawChart(stats) {
+function lastDays() {
   const days = [];
   const today = Date.now();
   for (let t = today - (state.days - 1) * 86400000; t <= today + 1; t += 86400000) days.push(utcDay(t));
   if (days[days.length - 1] !== utcDay(today)) days.push(utcDay(today));
+  return days;
+}
+
+function drawChart(stats) {
+  const days = lastDays();
   const byDay = new Map(days.map(d => [d, {}]));
   const present = new Set();
   for (const r of stats.daily) {
@@ -324,13 +536,18 @@ function drawChart(stats) {
     byDay.get(r.day)[g] = (byDay.get(r.day)[g] || 0) + r.count;
     present.add(g);
   }
-  const series = [...GROUPS, "other"].filter(g => present.has(g));
-  $("legend").replaceChildren(...series.map(g => el("span", { style: `--c:var(--s-${g})` }, LABELS[g] || "other")));
+  const series = [...GROUPS, "other"].filter(g => present.has(g))
+    .map(g => ({ key: g, label: LABELS[g] || "other", color: `var(--s-${g})` }));
+  drawStacked({ chart: $("chart"), tip: $("tip"), legend: $("legend"), days, byDay, series,
+    label: `Requests per day over the last ${state.days} days, by endpoint. The endpoints table lists the totals.` });
+}
 
-  const chart = $("chart");
+// A stacked bar per day. `byDay` maps each day to counts by series key.
+function drawStacked({ chart, tip, legend, days, byDay, series, label }) {
+  legend.replaceChildren(...series.map(s => el("span", { style: `--c:${s.color}` }, s.label)));
   chart.querySelector("svg")?.remove();
   const W = Math.max(chart.clientWidth, 280), H = 220, padL = 44, padR = 8, padT = 8, padB = 22;
-  const totals = days.map(d => series.reduce((s, g) => s + (byDay.get(d)[g] || 0), 0));
+  const totals = days.map(d => series.reduce((sum, s) => sum + (byDay.get(d)[s.key] || 0), 0));
   const max = Math.max(1, ...totals);
   const step = niceStep(max / 4);
   const top = Math.ceil(max / step) * step;
@@ -341,7 +558,7 @@ function drawChart(stats) {
   const svg = document.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `Requests per day over the last ${state.days} days, by endpoint. The endpoints table lists the totals.`);
+  svg.setAttribute("aria-label", label);
   const add = (tag, attrs, text) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); if (text !== undefined) n.textContent = text; svg.append(n); return n; };
 
   for (let v = 0; v <= top; v += step) {
@@ -351,22 +568,23 @@ function drawChart(stats) {
   const labelEvery = Math.ceil(days.length / Math.max(2, Math.floor((W - padL) / 70)));
   days.forEach((d, i) => {
     const x = padL + i * slot + (slot - bw) / 2;
+    const counts = byDay.get(d);
     let acc = 0;
-    series.forEach((g, si) => {
-      const v = byDay.get(d)[g] || 0;
+    series.forEach((s, si) => {
+      const v = counts[s.key] || 0;
       if (!v) return;
       const y0 = y(acc), y1 = y(acc + v);
       acc += v;
       // A 2px surface gap between stacked segments; the top one gets rounded ends.
-      const isTop = !series.slice(si + 1).some(h => byDay.get(d)[h]);
+      const isTop = !series.slice(si + 1).some(h => counts[h.key]);
       const h = Math.max(0, y0 - y1 - (acc - v > 0 ? 2 : 0));
       const r = isTop ? Math.min(4, bw / 2, h) : 0;
-      add("path", { d: roundedTop(x, y1, bw, h, r), fill: `var(--s-${g})` });
+      add("path", { d: roundedTop(x, y1, bw, h, r), fill: s.color });
     });
     if ((days.length - 1 - i) % labelEvery === 0) add("text", { x: x + bw / 2, y: H - 6, "text-anchor": "middle" }, d.slice(5));
     const hit = add("rect", { x: padL + i * slot, y: padT, width: slot, height: H - padT - padB, fill: "transparent" });
-    hit.addEventListener("mousemove", (ev) => showTip(ev, d, byDay.get(d), series, totals[i]));
-    hit.addEventListener("mouseleave", () => $("tip").style.display = "none");
+    hit.addEventListener("mousemove", (ev) => showTip(ev, chart, tip, d, counts, series, totals[i]));
+    hit.addEventListener("mouseleave", () => tip.style.display = "none");
   });
   chart.append(svg);
 }
@@ -382,13 +600,12 @@ function niceStep(raw) {
 }
 function compact(v) { return v >= 1e6 ? `${+(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${+(v / 1e3).toFixed(1)}k` : String(v); }
 
-function showTip(ev, day, counts, series, total) {
-  const tip = $("tip");
+function showTip(ev, chart, tip, day, counts, series, total) {
   tip.replaceChildren(el("div", { style: "font-weight:600;margin-bottom:4px" }, `${day} · ${fmt.format(total)}`),
-    ...series.slice().reverse().filter(g => counts[g]).map(g =>
-      el("div", { class: "row" }, el("span", { class: "sw", style: `--c:var(--s-${g})` }), LABELS[g] || "other", el("b", {}, fmt.format(counts[g])))));
+    ...series.slice().reverse().filter(s => counts[s.key]).map(s =>
+      el("div", { class: "row" }, el("span", { class: "sw", style: `--c:${s.color}` }), s.label, el("b", {}, fmt.format(counts[s.key])))));
   tip.style.display = "block";
-  const box = $("chart").getBoundingClientRect();
+  const box = chart.getBoundingClientRect();
   let left = ev.clientX - box.left + 12;
   if (left + tip.offsetWidth > box.width) left = ev.clientX - box.left - tip.offsetWidth - 12;
   tip.style.left = `${Math.max(0, left)}px`;
@@ -445,6 +662,12 @@ async function openDetail(id) {
   const url = r.path + (r.query_string ? `?${r.query_string}` : "");
   const rows = [["Time", `${new Date(r.ts).toLocaleString()} (${new Date(r.ts).toISOString()})`],
     ["Request", `${r.method} ${url}`], ["Status Then", `${r.status} in ${ms(r.duration_ms)} ms`], ["Client", r.user_agent || "Unknown"]];
+  if (r.language !== null && r.language !== undefined) {
+    const source = sourceOf(r.endpoint);
+    const as = searchedAs(r.language, source);
+    rows.splice(2, 0, ["Language", r.language ? (as !== r.language ? `${r.language} (searched as ${as})` : r.language) : "None (every language)"]);
+  }
+  $("detail-debug").hidden = !(isSnippetEndpoint(r.endpoint) && r.query);
   $("detail-info").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
   if (r.body) {
     let body = r.body;
@@ -486,21 +709,471 @@ function renderReplay() {
   else $("replay-out").textContent = res.body;
 }
 
+// ---- Views ----
+const SUBS = ["coverage", "searches", "debugger"];
+// `#snippets` or `#snippets/<sub>` opens the Snippets view.
+function readHash() {
+  const [view, sub] = location.hash.slice(1).split("/");
+  state.view = view === "snippets" ? "snippets" : "traffic";
+  if (SUBS.includes(sub)) state.sub = sub;
+}
+function writeHash() {
+  const hash = state.view === "snippets" ? (state.sub === "coverage" ? "#snippets" : `#snippets/${state.sub}`) : "";
+  history.replaceState(null, "", hash || location.pathname);
+}
+function showView() {
+  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.view === state.view));
+  $("view-traffic").style.display = state.view === "traffic" ? "grid" : "none";
+  $("view-snippets").style.display = state.view === "snippets" ? "grid" : "none";
+  for (const b of document.querySelectorAll(".subtabs button")) b.setAttribute("aria-selected", String(b.dataset.sub === state.sub));
+  for (const g of document.querySelectorAll("#view-snippets .group")) g.hidden = g.dataset.sub !== state.sub;
+  // A chart drawn while hidden has no width.
+  if (state.view === "snippets" && state.sub === "searches" && sn.stats) drawSnippetChart(sn.stats);
+}
+function setView(view) {
+  if (view === state.view) return;
+  state.view = view;
+  writeHash();
+  showView();
+  refresh();
+}
+function setSub(sub) {
+  if (state.view !== "snippets") setView("snippets");
+  if (sub === state.sub) return;
+  state.sub = sub;
+  writeHash();
+  showView();
+  window.scrollTo({ top: 0 });
+}
+
+// ---- Snippets ----
+const SNIPPET_ENDPOINTS = { snippets: "rest", "mcp:search_snippets": "mcp" };
+const SOURCE_LABELS = { rest: "/snippets/search", mcp: "MCP" };
+const isSnippetEndpoint = (ep) => ep in SNIPPET_ENDPOINTS;
+const sourceOf = (ep) => SNIPPET_ENDPOINTS[ep] || "rest";
+// Mirrors normalize_language in the service: the MCP server normalizes, /snippets/search doesn't.
+const LANGUAGE_ALIASES = { py: "python", ts: "typescript", js: "javascript", jsx: "javascript", rs: "rust",
+  "c#": "csharp", cs: "csharp", dotnet: "csharp", ".net": "csharp", golang: "go", rest: "http",
+  "http request": "http", bash: "shell", sh: "shell", console: "shell", env: "shell" };
+function normalizeLanguage(l) { const t = l.trim().toLowerCase(); return LANGUAGE_ALIASES[t] || t; }
+function searchedAs(language, source) { return source === "mcp" ? normalizeLanguage(language) : language; }
+const LANGUAGE_COLORS = ["var(--s-search)", "var(--s-md)", "var(--s-skills)", "var(--s-snippets)", "var(--s-mcp)", "var(--s-violet)"];
+const NO_LANGUAGE = "-";
+const languageLabel = (l) => l === "" ? "(none)" : l;
+
+const sn = { source: "", offset: 0, sort: "time", order: "desc", stats: null, languages: [], index: null, indexError: null };
+const PAGE_SIZE = 50;
+// Numbers and times sort largest first on the first click, text A to Z.
+const DESCENDING_FIRST = ["time", "status", "duration"];
+
+// The parameters of the Snippet Searches section's filters.
+function snippetParams(extra = {}) {
+  const p = new URLSearchParams({ days: state.days });
+  if (sn.source) p.set("source", sn.source);
+  const lang = $("sn-language").value;
+  if (lang) p.set("language", lang);
+  const text = $("sn-search").value.trim();
+  if (text) p.set("contains", text);
+  if ($("sn-errors").checked) p.set("errors", "true");
+  for (const [k, v] of Object.entries(extra)) p.set(k, v);
+  return p;
+}
+
+async function loadIndex() {
+  if (sn.index || sn.indexError) return;
+  try { sn.index = await api("/admin/api/snippets/index"); }
+  catch (e) { sn.indexError = e.message; }
+  $("dbg-languages").replaceChildren(...(sn.index?.languages || []).map(l => el("option", { value: l.value })));
+}
+const indexCount = (language) => sn.index?.languages.find(l => l.value === language)?.count;
+
+async function refreshSnippets() {
+  await loadIndex();
+  await Promise.all([loadCoverage(), loadSnippetSearches()]);
+}
+
+// ---- Language coverage ----
+async function loadCoverage() {
+  sn.languages = await api(`/admin/api/snippets/languages?days=${state.days}`);
+  fillLanguageSelect(sn.languages);
+  renderCoverage(sn.languages);
+}
+
+// Rows by the language the index is filtered by, with every indexed language.
+function coverageRows(languages) {
+  const rows = new Map();
+  const row = (name) => {
+    if (!rows.has(name)) rows.set(name, { name, searches: 0, mcp: 0, rest: 0, errors: 0, requested: new Map() });
+    return rows.get(name);
+  };
+  for (const l of languages) {
+    const r = row(l.searched_as);
+    r.searches += l.count; r[l.source] += l.count; r.errors += l.errors;
+    r.requested.set(l.language, (r.requested.get(l.language) || 0) + l.count);
+  }
+  for (const l of sn.index?.languages || []) row(l.value);
+  return [...rows.values()].sort((a, b) => b.searches - a.searches
+    || (indexCount(b.name) || 0) - (indexCount(a.name) || 0) || a.name.localeCompare(b.name));
+}
+
+const namesSub = (names) => names.length ? `${names.slice(0, 4).join(", ")}${names.length > 4 ? ` and ${names.length - 4} more` : ""}` : "";
+
+function renderCoverage(languages) {
+  const rows = coverageRows(languages);
+  const total = rows.reduce((s, r) => s + r.searches, 0);
+  if (sn.index) {
+    $("cov-total").textContent = fmt.format(sn.index.total);
+    $("cov-total-sub").textContent = `${sn.index.languages.length} languages`;
+    const missing = rows.filter(r => r.name && r.searches && !indexCount(r.name));
+    const n = missing.reduce((s, r) => s + r.searches, 0);
+    $("cov-missing").textContent = fmt.format(n);
+    $("cov-missing").classList.toggle("bad", n > 0);
+    $("cov-missing-sub").textContent = n
+      ? `${total ? (100 * n / total).toFixed(1) : 0}% of searches find nothing: ${namesSub(missing.map(r => r.name))}`
+      : "Every requested language has snippets";
+    $("cov-tab-badge").hidden = !n;
+    $("cov-tab-badge").textContent = `${fmt.format(n)} missing`;
+    $("cov-tab-badge").title = "Searches for languages the index has no snippets in";
+    const unused = rows.filter(r => r.name && !r.searches);
+    $("cov-unused").textContent = fmt.format(unused.length);
+    $("cov-unused-sub").textContent = namesSub(unused.map(r => r.name));
+    $("cov-versions").textContent = sn.index.versions.length
+      ? `Versions in the index: ${sn.index.versions.map(v => `${v.value} (${fmt.format(v.count)})`).join(", ")}` : "";
+  } else {
+    for (const id of ["cov-total", "cov-missing", "cov-unused"]) $(id).textContent = "?";
+    $("cov-total-sub").textContent = "The index can't be read";
+    $("cov-missing-sub").textContent = $("cov-unused-sub").textContent = "";
+    $("cov-versions").replaceChildren(el("span", { class: "err" }, `The snippet index can't be read: ${sn.indexError || "unknown error"}`));
+  }
+
+  const tbody = $("cov-languages");
+  tbody.replaceChildren();
+  if (!rows.length) tbody.append(el("tr", {}, el("td", { colspan: 8, class: "empty" }, "No searches and no index in this range.")));
+  for (const r of rows) {
+    const snippets = r.name === "" ? sn.index?.total : indexCount(r.name);
+    let status = null;
+    if (r.name && sn.index && !snippets && r.searches) status = el("span", { class: "badge warn", title: "The index has no snippets in this language, so these searches find nothing." }, "not in the index");
+    else if (r.name && !r.searches) status = el("span", { class: "badge" }, "never searched");
+    const requested = [...r.requested.entries()].sort((a, b) => b[1] - a[1]).map(([raw, count]) =>
+      el("button", { class: "chip", type: "button", title: "Show these searches in Snippet Searches",
+        onclick: () => filterSearchesBy(raw) }, languageLabel(raw), el("b", {}, fmt.format(count))));
+    tbody.append(el("tr", {},
+      el("td", {}, r.name === "" ? el("span", { class: "time" }, "Any language") : r.name, " ", status),
+      el("td", { class: "num" }, snippets === undefined ? (sn.index ? "0" : "?") : fmt.format(snippets)),
+      el("td", { class: "num" }, sn.index?.total && snippets ? `${(100 * snippets / sn.index.total).toFixed(1)}%` : ""),
+      el("td", { class: "num" + (r.searches ? "" : " time") }, fmt.format(r.searches)),
+      el("td", { class: "num" }, r.mcp ? fmt.format(r.mcp) : ""),
+      el("td", { class: "num" }, r.rest ? fmt.format(r.rest) : ""),
+      el("td", { class: "num" + (r.errors ? " bad" : "") }, r.errors ? fmt.format(r.errors) : ""),
+      el("td", {}, requested)));
+  }
+}
+
+function filterSearchesBy(language) {
+  const value = language === "" ? NO_LANGUAGE : language;
+  const select = $("sn-language");
+  if (![...select.options].some(o => o.value === value)) select.append(el("option", { value }, language));
+  select.value = value;
+  snippetFiltersChanged();
+  setSub("searches");
+}
+
+function fillLanguageSelect(languages) {
+  const names = [...new Set(languages.map(l => l.language))].filter(l => l !== "").sort();
+  const select = $("sn-language");
+  const current = select.value;
+  select.replaceChildren(el("option", { value: "" }, "All Languages"), el("option", { value: NO_LANGUAGE }, "No Language"),
+    ...names.map(n => el("option", { value: n }, n)));
+  if (current && ![...select.options].some(o => o.value === current)) select.append(el("option", { value: current }, current));
+  select.value = current;
+}
+
+// ---- Snippet searches ----
+function loadSnippetSearches() {
+  resetSnippetRequests();
+  return Promise.all([loadSnippetStats(), loadSnippetTop()]);
+}
+function snippetFiltersChanged() { loadSnippetSearches().catch(console.error); }
+
+async function loadSnippetStats() {
+  const stats = await api(`/admin/api/snippets/stats?${snippetParams()}`);
+  sn.stats = stats;
+  $("sn-total").textContent = fmt.format(stats.total);
+  $("sn-tab-badge").hidden = false;
+  $("sn-tab-badge").textContent = compact(stats.total);
+  $("sn-tab-badge").title = "Searches matching the filters";
+  const perDay = stats.total / state.days;
+  $("sn-total-sub").textContent = `${perDay >= 10 ? fmt.format(Math.round(perDay)) : perDay.toFixed(1)} per day · ${fmt.format(stats.distinct_queries)} distinct queries`;
+  $("sn-nolang").textContent = fmt.format(stats.without_language);
+  $("sn-nolang-sub").textContent = stats.total ? `${(100 * stats.without_language / stats.total).toFixed(1)}% search every language` : "";
+  $("sn-err").textContent = fmt.format(stats.errors);
+  $("sn-err-sub").textContent = stats.total ? `${(100 * stats.errors / stats.total).toFixed(2)}% of these searches` : "";
+  $("sn-p95").textContent = stats.sources.length ? `${ms(Math.max(...stats.sources.map(s => s.p95_ms)))} ms` : "-";
+  $("sn-p95-sub").textContent = stats.sources.map(s => `${SOURCE_LABELS[s.source]} ${ms(s.p95_ms)} ms`).join(" · ");
+  drawSnippetChart(stats);
+}
+
+function drawSnippetChart(stats) {
+  const days = lastDays();
+  const byDay = new Map(days.map(d => [d, {}]));
+  const totals = new Map();
+  for (const r of stats.daily) totals.set(r.language, (totals.get(r.language) || 0) + r.count);
+  // The six most searched languages get a color each; the rest are "other".
+  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l);
+  const shown = ranked.slice(0, ranked.length > 6 ? 5 : 6);
+  const keyOf = (l) => shown.includes(l) ? `l:${l}` : "other";
+  for (const r of stats.daily) {
+    if (!byDay.has(r.day)) continue;
+    const k = keyOf(r.language);
+    byDay.get(r.day)[k] = (byDay.get(r.day)[k] || 0) + r.count;
+  }
+  const series = shown.map((l, i) => ({ key: `l:${l}`, label: languageLabel(l), color: LANGUAGE_COLORS[i] }));
+  if (ranked.length > shown.length) series.push({ key: "other", label: "other", color: "var(--s-other)" });
+  drawStacked({ chart: $("sn-chart"), tip: $("sn-tip"), legend: $("sn-legend"), days, byDay, series,
+    label: `Snippet searches per day over the last ${state.days} days, by requested language.` });
+}
+
+async function loadSnippetTop() {
+  const rows = await api(`/admin/api/snippets/top?${snippetParams()}`);
+  const tbody = $("sn-top");
+  tbody.replaceChildren();
+  if (!rows.length) tbody.append(el("tr", {}, el("td", { colspan: 4, class: "empty" }, "No queries match.")));
+  for (const r of rows) {
+    const open = () => debugSearch(r.query, r.language, r.source);
+    tbody.append(el("tr", { class: "click", tabindex: 0, onclick: open, onkeydown: (ev) => ev.key === "Enter" && open() },
+      el("td", { class: "q" }, r.query),
+      el("td", {}, languageLabel(r.language)),
+      el("td", { class: "time" }, SOURCE_LABELS[r.source]),
+      el("td", { class: "num" + (r.errors ? " bad" : "") }, fmt.format(r.count))));
+  }
+}
+
+let requestsRun = 0;
+function resetSnippetRequests() {
+  sn.offset = 0;
+  for (const th of $("sn-req-head").querySelectorAll("th")) {
+    th.setAttribute("aria-sort", th.dataset.sort === sn.sort ? (sn.order === "asc" ? "ascending" : "descending") : "none");
+  }
+  $("sn-requests").replaceChildren();
+  loadSnippetRequests().catch(console.error);
+}
+async function loadSnippetRequests() {
+  const run = ++requestsRun;
+  const rows = await api(`/admin/api/snippets/requests?${snippetParams({ sort: sn.sort, order: sn.order, offset: sn.offset })}`);
+  if (run !== requestsRun) return;
+  const tbody = $("sn-requests");
+  if (!rows.length && !sn.offset) tbody.append(el("tr", {}, el("td", { colspan: 6, class: "empty" }, "No requests match.")));
+  for (const r of rows) {
+    const open = () => openDetail(r.id);
+    tbody.append(el("tr", { class: "click", tabindex: 0, onclick: open, onkeydown: (ev) => ev.key === "Enter" && open() },
+      el("td", { class: "time", title: new Date(r.ts).toISOString() }, new Date(r.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+      el("td", { class: "time" }, SOURCE_LABELS[sourceOf(r.endpoint)]),
+      el("td", {}, languageLabel(r.language || "")),
+      el("td", { class: "q" }, r.query || ""),
+      el("td", { class: "num" + (r.status >= 400 ? " bad" : "") }, r.status),
+      el("td", { class: "num" }, ms(r.duration_ms))));
+  }
+  sn.offset += rows.length;
+  $("sn-more").hidden = rows.length < PAGE_SIZE;
+}
+
+// ---- Search debugger ----
+function debugSearch(query, language, source) {
+  const form = $("dbg-form");
+  form.query.value = query;
+  form.language.value = language || "";
+  form.normalize.checked = source === "mcp";
+  if ($("detail").open) $("detail").close();
+  setSub("debugger");
+  runDebug();
+}
+
+let debugRun = 0;
+async function runDebug() {
+  const form = $("dbg-form");
+  const query = form.query.value.trim();
+  if (!query) return;
+  const params = new URLSearchParams({ query, limit: form.limit.value || 5, normalize: form.normalize.checked });
+  if (form.language.value.trim()) params.set("language", form.language.value.trim());
+  const run = ++debugRun;
+  $("dbg-out").replaceChildren(el("p", { class: "empty" }, "Searching..."));
+  let res;
+  try { res = await api(`/admin/api/snippets/search?${params}`); }
+  catch (e) { if (run === debugRun) $("dbg-out").replaceChildren(el("p", { class: "err" }, `Search failed: ${e.message}`)); return; }
+  if (run !== debugRun) return;
+
+  const rankIn = (list) => new Map(list.map((h, i) => [h.id, i + 1]));
+  const fusedRank = rankIn(res.fused), denseRank = rankIn(res.dense), sparseRank = rankIn(res.sparse);
+  const meta = [`${fmt.format(res.fused.length)} results`, `${ms(res.duration_ms)} ms for all three searches`,
+    `each half gives the fusion its top ${res.prefetch_limit}`];
+  if (res.searched_as) {
+    const n = indexCount(res.searched_as);
+    meta.unshift(`language ${res.searched_as}${sn.index && !n ? " (not in the index)" : ""}`);
+  } else meta.unshift("every language");
+  const sameCode = new Map();
+  for (const h of res.fused) sameCode.set(`${h.language}\u0000${h.code.trimEnd()}`, (sameCode.get(`${h.language}\u0000${h.code.trimEnd()}`) || 0) + 1);
+  const dupes = [...sameCode.values()].filter(n => n > 1).reduce((s, n) => s + n - 1, 0);
+  if (dupes) meta.push(`${dupes} repeat code already in the results; the MCP server leaves those out`);
+
+  const column = (title, why, list, badges) => el("div", { class: "dbg-col" },
+    el("h3", {}, title, el("span", { class: "meta" }, `${list.length}`)),
+    el("p", { class: "why" }, why),
+    list.length ? list.map((h, i) => hitCard(h, i + 1, badges(h))) : el("p", { class: "empty" }, "Nothing found."));
+  const rank = (m, id, name) => m.has(id) ? el("span", { class: "badge" }, `${name} #${m.get(id)}`) : el("span", { class: "badge warn" }, `not in ${name}`);
+  $("dbg-out").replaceChildren(
+    el("div", { class: "dbg-meta" }, meta.join(" · ")),
+    el("div", { class: "dbg-cols" },
+      column("Results", "Reciprocal rank fusion of both halves, as /snippets/search and the MCP server run it.", res.fused,
+        (h) => [rank(denseRank, h.id, "dense"), rank(sparseRank, h.id, "sparse")]),
+      column("Dense", "The query's embedding against the descriptions.", res.dense,
+        (h) => [fusedRank.has(h.id) ? el("span", { class: "badge" }, `result #${fusedRank.get(h.id)}`) : null]),
+      column("Sparse", "BM25 of the query against the code.", res.sparse,
+        (h) => [fusedRank.has(h.id) ? el("span", { class: "badge" }, `result #${fusedRank.get(h.id)}`) : null])));
+}
+
+// ---- Code highlighting ----
+// A small tokenizer for the snippet languages: keywords, strings, comments,
+// numbers, calls, and JSON keys. Enough to read code, not a parser.
+const KEYWORDS = {
+  python: "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield",
+  javascript: "async await break case catch class const continue default delete do else export extends false finally for from function if import in instanceof let new null of return static super switch this throw true try typeof undefined var void while yield",
+  typescript: "abstract any as async await boolean break case catch class const continue declare default do else enum export extends false finally for from function if implements import in interface let new null number of private protected public readonly return static string super switch this throw true try type typeof undefined var void while",
+  rust: "as async await break const continue crate dyn else enum Err extern false fn for if impl in let loop match mod move mut None Ok pub ref return self Self Some static struct super trait true type unsafe use where while",
+  java: "abstract boolean break case catch class continue default do double else enum extends false final finally float for if implements import instanceof int interface long new null package private protected public return static super switch this throw throws true try var void while",
+  csharp: "abstract as async await base bool break case catch class const continue default do double else enum false finally float for foreach if in int interface internal is long namespace new null out override private protected public readonly ref return static string struct switch this throw true try using var void while",
+  go: "break case chan const continue default defer else false fallthrough for func go goto if import interface map nil package range return select struct switch true type var",
+  shell: "case do done echo elif else esac export fi for function if in then until while",
+  http: "GET POST PUT PATCH DELETE HEAD OPTIONS",
+};
+const KEYWORD_SETS = Object.fromEntries(Object.entries(KEYWORDS).map(([k, v]) => [k, new Set(v.split(" "))]));
+const HASH_COMMENTS = new Set(["python", "shell", "ruby", "yaml", "toml"]);
+const NO_COMMENTS = new Set(["http", "json"]);
+const tokenizers = new Map();
+
+function tokenizer(language) {
+  if (tokenizers.has(language)) return tokenizers.get(language);
+  const comment = HASH_COMMENTS.has(language) ? String.raw`#[^\n]*`
+    : NO_COMMENTS.has(language) ? null : String.raw`\/\/[^\n]*|\/\*[\s\S]*?\*\/`;
+  const strings = [];
+  if (language === "python") strings.push(String.raw`"""[\s\S]*?"""|'''[\s\S]*?'''`);
+  strings.push(String.raw`"(?:\\.|[^"\\\n])*"`);
+  // A Rust ' starts a char or a lifetime: only a char closes right away.
+  if (language === "rust") strings.push(String.raw`'(?:\\.|[^'\\\n])'`);
+  else if (!NO_COMMENTS.has(language)) strings.push(String.raw`'(?:\\.|[^'\\\n])*'`);
+  if (["javascript", "typescript", "go"].includes(language)) strings.push(String.raw`\x60(?:\\.|[^\x60\\])*\x60`);
+  const parts = [
+    comment && `(?<c>${comment})`,
+    String.raw`(?<p>"(?:\\.|[^"\\\n])*"(?=\s*:))`,
+    `(?<s>${strings.join("|")})`,
+    String.raw`(?<n>\b(?:0x[\da-fA-F]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)`,
+    String.raw`(?<w>[A-Za-z_$][\w$]*)`,
+  ].filter(Boolean);
+  const t = { re: new RegExp(parts.join("|"), "g"), keywords: KEYWORD_SETS[language] || KEYWORD_SETS.javascript };
+  tokenizers.set(language, t);
+  return t;
+}
+
+function highlight(code, language) {
+  const { re, keywords } = tokenizer(normalizeLanguage(language || ""));
+  const out = document.createDocumentFragment();
+  const span = (cls, text) => { const e = document.createElement("span"); e.className = cls; e.textContent = text; return e; };
+  let last = 0;
+  re.lastIndex = 0;
+  for (let m; (m = re.exec(code));) {
+    if (m.index > last) out.append(code.slice(last, m.index));
+    const g = m.groups, text = m[0];
+    if (g.c) out.append(span("tok-c", text));
+    else if (g.p) out.append(span("tok-p", text));
+    else if (g.s) out.append(span("tok-s", text));
+    else if (g.n) out.append(span("tok-n", text));
+    else if (keywords.has(text)) out.append(span("tok-k", text));
+    else if (/^\s*\(/.test(code.slice(re.lastIndex, re.lastIndex + 40))) out.append(span("tok-f", text));
+    else out.append(text);
+    last = re.lastIndex;
+  }
+  if (last < code.length) out.append(code.slice(last));
+  return out;
+}
+
+function hitCard(h, rank, badges) {
+  const url = /^https?:\/\//.test(h.source?.url || "") ? h.source.url : null;
+  const lines = h.source?.lines ? ` · lines ${h.source.lines[0]}-${h.source.lines[1]}` : "";
+  const card = el("div", { class: "hit", "data-id": h.id },
+    el("div", { class: "top" },
+      el("span", { class: "rank" }, `#${rank}`),
+      el("span", { class: "score", title: "Score" }, h.score.toFixed(4)),
+      el("span", { class: "badge" }, h.language),
+      ...badges,
+      el("span", { class: "score" }, `${h.package_name} ${h.version}`)),
+    el("div", { class: "src" }, url ? el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, url) : (h.source?.url || ""), lines),
+    h.description ? el("div", { class: "desc" }, h.description) : el("div", { class: "desc sub-note" }, "No description."),
+    el("details", {}, el("summary", {}, (() => { const n = h.code.split("\n").length; return `Code (${n} ${n === 1 ? "line" : "lines"})`; })()), el("pre", {}, highlight(h.code, h.language))));
+  // Opening or closing the code opens or closes it for the same snippet in
+  // the other columns. Setting `open` to what it already is fires no event.
+  const code = card.querySelector("details");
+  code.addEventListener("toggle", () => {
+    for (const d of document.querySelectorAll(`.hit[data-id="${CSS.escape(h.id)}"] details`)) {
+      if (d.open !== code.open) d.open = code.open;
+    }
+  });
+  // Point out the same snippet in the other columns.
+  card.addEventListener("mouseenter", () => { for (const c of document.querySelectorAll(`.hit[data-id="${CSS.escape(h.id)}"]`)) c.classList.add("hl"); });
+  card.addEventListener("mouseleave", () => { for (const c of document.querySelectorAll(".hit.hl")) c.classList.remove("hl"); });
+  return card;
+}
+
+$("sn-source").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  sn.source = b.dataset.source;
+  for (const x of $("sn-source").querySelectorAll("button")) x.setAttribute("aria-pressed", String(x === b));
+  snippetFiltersChanged();
+});
+$("sn-language").addEventListener("change", snippetFiltersChanged);
+$("sn-errors").addEventListener("change", snippetFiltersChanged);
+let snSearchTimer;
+$("sn-search").addEventListener("input", () => { clearTimeout(snSearchTimer); snSearchTimer = setTimeout(snippetFiltersChanged, 300); });
+$("sn-clear").addEventListener("click", () => {
+  sn.source = "";
+  for (const x of $("sn-source").querySelectorAll("button")) x.setAttribute("aria-pressed", String(x.dataset.source === ""));
+  $("sn-language").value = ""; $("sn-search").value = ""; $("sn-errors").checked = false;
+  snippetFiltersChanged();
+});
+$("sn-req-head").addEventListener("click", (ev) => {
+  const th = ev.target.closest("th[data-sort]");
+  if (!th) return;
+  if (sn.sort === th.dataset.sort) sn.order = sn.order === "asc" ? "desc" : "asc";
+  else { sn.sort = th.dataset.sort; sn.order = DESCENDING_FIRST.includes(sn.sort) ? "desc" : "asc"; }
+  resetSnippetRequests();
+});
+$("sn-more").addEventListener("click", () => loadSnippetRequests().catch(console.error));
+$("dbg-form").addEventListener("submit", (ev) => { ev.preventDefault(); runDebug(); });
+$("detail-debug").addEventListener("click", () => {
+  if (!current) return;
+  const r = current;
+  if (state.view !== "snippets") setView("snippets");
+  debugSearch(r.query, r.language, sourceOf(r.endpoint));
+});
+
 // ---- Wiring ----
 function setDays(days) {
   state.days = days;
   try { localStorage.setItem("admin-days", String(days)); } catch {}
-  for (const b of $("range").querySelectorAll("button")) b.setAttribute("aria-pressed", String(Number(b.dataset.days) === days));
+  for (const b of document.querySelectorAll(".range button")) b.setAttribute("aria-pressed", String(Number(b.dataset.days) === days));
   refresh();
 }
 async function refresh() {
   try {
-    await loadStats();
-    resetRequests();
-    await loadTop();
+    if (state.view === "snippets") await refreshSnippets();
+    else {
+      await loadStats();
+      resetRequests();
+      await loadTop();
+    }
   } catch (e) { console.error(e); }
 }
-$("range").addEventListener("click", (ev) => { const d = Number(ev.target.dataset.days); if (d) setDays(d); });
+// One time range, shown on every tab it applies to.
+for (const r of document.querySelectorAll(".range")) r.addEventListener("click", (ev) => { const d = Number(ev.target.dataset.days); if (d) setDays(d); });
 $("top-endpoint").addEventListener("change", loadTop);
 $("req-endpoint").addEventListener("change", resetRequests);
 let searchTimer;
@@ -511,8 +1184,21 @@ $("detail").addEventListener("close", () => { current = null; });
 $("replay-again").addEventListener("click", replay);
 $("raw").addEventListener("change", renderReplay);
 let resizeTimer;
-window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => lastStats && drawChart(lastStats), 200); });
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => {
+  if (state.view === "snippets") { if (sn.stats && state.sub === "searches") drawSnippetChart(sn.stats); } else if (lastStats) drawChart(lastStats);
+}, 200); });
 api("/admin/api/me").then(me => { $("who").textContent = me.email; }).catch(() => {});
+for (const b of document.querySelectorAll(".tabs button")) b.addEventListener("click", () => setView(b.dataset.view));
+for (const b of document.querySelectorAll(".subtabs button")) b.addEventListener("click", () => setSub(b.dataset.sub));
+window.addEventListener("hashchange", () => {
+  const view = state.view;
+  readHash();
+  writeHash();
+  showView();
+  if (view !== state.view) refresh();
+});
+readHash();
+showView();
 setDays(state.days);
 </script>
 </body>
