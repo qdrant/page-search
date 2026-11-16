@@ -63,11 +63,12 @@ Tools answer in Markdown by default. `format: "json"` returns the same result
 as JSON, in both the text and the structured content. `get_page` returns
 Markdown only. New tools should offer both formats where a JSON form makes sense.
 
-Everything comes from Qdrant; the server makes no requests to the site. The
-page index for `list_docs`, titles, and old URLs comes from the `pages`
-collection, read again every 5 minutes, and pages from the `sections`
-collection. So what agents read is what was last indexed, the same as what
-they search.
+Everything comes from Qdrant; the server makes no requests to the site.
+`get_page` finds the page, or the page an old URL moved to, with a filtered
+query on the `page` and `aliases` fields of `pages`, and reads it from
+`sections`. `list_docs` and the titles in results read all of `pages` at most
+every 5 minutes. So what agents read is what was last indexed, the same as
+what they search.
 
 ## Suggestions for missing pages
 

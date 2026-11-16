@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use super::{Backend, DocsServer, Source};
 use crate::docs_mcp::config::{Config, SOURCES};
 use crate::docs_mcp::library::SITE_URL;
-use crate::pages::{page_key, StoredPage};
+use crate::pages::{self, page_key, StoredPage};
 use crate::similar_paths::MemoryIndex;
 use crate::snippets::Snippet;
 
@@ -34,9 +34,23 @@ pub struct FixedBackend {
     /// Markdown by `page` key.
     markdown: HashMap<String, String>,
     pub markdown_requests: Mutex<Vec<String>>,
+    /// The paths looked up with [`FixedBackend::find_page`].
+    pub find_requests: Mutex<Vec<String>>,
 }
 
 impl FixedBackend {
+    /// The pages `pages::find_page` would filter by, matched the same way.
+    pub fn find_page(&self, page: &str) -> Option<StoredPage> {
+        self.find_requests.lock().unwrap().push(page.to_string());
+        let found = self
+            .pages
+            .iter()
+            .filter(|p| p.page == page || p.meta.aliases.iter().any(|a| a == page))
+            .cloned()
+            .collect();
+        pages::best_match(page, found)
+    }
+
     pub fn page_markdown(&self, page: &str) -> Option<String> {
         self.markdown_requests
             .lock()
@@ -500,6 +514,15 @@ async fn get_page_resolves_alias_and_strips_preamble() {
     assert!(body.contains("Partition: develop"), "{body}");
     assert!(!body.contains("skills.qdrant.tech"));
     assert!(body.contains("# Hybrid and Multi-Stage Queries"));
+    // Found with one filtered lookup of the old path, then read at the new one.
+    assert_eq!(
+        *h.backend.find_requests.lock().unwrap(),
+        ["documentation/concepts/hybrid-queries"]
+    );
+    assert_eq!(
+        h.markdown_requests(),
+        ["documentation/search/hybrid-queries"]
+    );
 }
 
 #[tokio::test]

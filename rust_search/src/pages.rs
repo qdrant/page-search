@@ -112,6 +112,43 @@ pub async fn all_pages(client: &Qdrant) -> anyhow::Result<Vec<StoredPage>> {
     Ok(pages)
 }
 
+/// The page at `page`, written like the `page` payload field, or the page that
+/// has it as an old path.
+pub async fn find_page(client: &Qdrant, page: &str) -> anyhow::Result<Option<StoredPage>> {
+    let response = client
+        .scroll(
+            ScrollPointsBuilder::new(PAGE_COLLECTION_NAME)
+                .filter(Filter::should([
+                    Condition::matches("page", MatchValue::Keyword(page.to_string())),
+                    Condition::matches("aliases", MatchValue::Keyword(page.to_string())),
+                ]))
+                // The page itself, and a page that wrongly has it as an alias.
+                .limit(2)
+                .with_payload(true)
+                .with_vectors(false),
+        )
+        .await?;
+    let found = response
+        .result
+        .into_iter()
+        .map(|point| Payload::from(point.payload).deserialize())
+        .collect::<Result<Vec<StoredPage>, _>>()?;
+    Ok(best_match(page, found))
+}
+
+/// Of the pages found for `page`, the one at that path, else one that has it
+/// as an old path.
+pub fn best_match(page: &str, found: Vec<StoredPage>) -> Option<StoredPage> {
+    let mut found = found
+        .into_iter()
+        .filter(|p| p.page == page || p.meta.aliases.iter().any(|alias| alias == page));
+    let first = found.next()?;
+    if first.page == page {
+        return Some(first);
+    }
+    Some(found.find(|p| p.page == page).unwrap_or(first))
+}
+
 /// The Markdown of `page`, written like the `page` payload field: its
 /// sections in order. `None` if it has no sections.
 pub async fn page_markdown(client: &Qdrant, page: &str) -> anyhow::Result<Option<String>> {
@@ -187,6 +224,37 @@ mod tests {
         assert_eq!(stored.title, "FAQ");
         assert_eq!(stored.meta.kind, "section");
         assert!(!stored.meta.rendered);
+    }
+
+    #[test]
+    fn prefers_the_page_at_a_path_over_an_alias() {
+        let stored = |page: &str, aliases: &[&str]| StoredPage {
+            page: page.to_string(),
+            title: String::new(),
+            meta: PageMeta {
+                aliases: aliases.iter().map(|a| a.to_string()).collect(),
+                ..PageMeta::default()
+            },
+        };
+        let found = |pages: Vec<StoredPage>, key| best_match(key, pages).map(|p| p.page);
+
+        let moved = stored(
+            "documentation/search/filtering",
+            &["documentation/filtering"],
+        );
+        let stale = stored("documentation/old", &["documentation/search/filtering"]);
+        assert_eq!(
+            found(
+                vec![stale.clone(), moved.clone()],
+                "documentation/search/filtering"
+            ),
+            Some("documentation/search/filtering".to_string())
+        );
+        assert_eq!(
+            found(vec![moved.clone()], "documentation/filtering"),
+            Some("documentation/search/filtering".to_string())
+        );
+        assert_eq!(found(vec![moved], "documentation/other"), None);
     }
 
     #[test]

@@ -356,6 +356,16 @@ impl Backend {
         }
     }
 
+    /// The page at a path, written like the `page` payload field, or the page
+    /// that has it as an old path.
+    pub async fn find_page(&self, page: &str) -> anyhow::Result<Option<StoredPage>> {
+        match self {
+            Self::Qdrant { client, .. } => pages::find_page(client, page).await,
+            #[cfg(test)]
+            Self::Fixed(fixed) => Ok(fixed.find_page(page)),
+        }
+    }
+
     /// The Markdown of a page, written like the `page` payload field.
     pub async fn page_markdown(&self, page: &str) -> anyhow::Result<Option<String>> {
         match self {

@@ -283,9 +283,16 @@ impl Library {
         reference: &str,
     ) -> Result<(Option<DocPage>, String, String), PageError> {
         let path = self.normalize(reference)?;
-        let index = self.page_index().await?;
-        let path = index.resolve(&path).to_string();
-        let page = index.pages.get(&path).cloned();
+        // One filtered query rather than the cached page index, so a page is
+        // readable as soon as it's indexed.
+        let page = self
+            .backend
+            .find_page(&page_key(&path))
+            .await
+            .map_err(|e| PageError::Other(format!("Could not look up the page: {e}")))?
+            .map(DocPage::from)
+            .filter(|page| self.sources.iter().any(|s| s == page.source()));
+        let path = page.as_ref().map_or(path, |page| page.path.clone());
         if let Some(page) = &page {
             if !page.rendered {
                 return Err(PageError::Other(format!(
