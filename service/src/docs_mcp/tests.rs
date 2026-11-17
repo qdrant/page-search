@@ -14,6 +14,8 @@ use serde_json::{json, Value};
 use super::{Backend, DocsServer, Source};
 use crate::docs_mcp::config::{Config, SOURCES};
 use crate::docs_mcp::library::SITE_URL;
+use crate::feedback::tests::TempStore;
+use crate::feedback::FeedbackFilter;
 use crate::pages::{self, page_key, StoredPage};
 use crate::similar_paths::MemoryIndex;
 use crate::snippets::Snippet;
@@ -224,6 +226,7 @@ fn stored(index: &Value) -> Vec<StoredPage> {
 struct Harness {
     client: RunningService<RoleClient, ()>,
     backend: Arc<FixedBackend>,
+    feedback: TempStore,
 }
 
 impl Harness {
@@ -257,7 +260,9 @@ impl Harness {
                 .collect(),
         );
         let backend = Arc::new(backend);
-        let server = DocsServer::new(config, Backend::Fixed(backend.clone()));
+        let feedback = TempStore::new();
+        let server = DocsServer::new(config, Backend::Fixed(backend.clone()))
+            .with_feedback(feedback.store.clone());
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             server
@@ -269,7 +274,27 @@ impl Harness {
                 .unwrap();
         });
         let client = ().serve(client_transport).await.unwrap();
-        Self { client, backend }
+        Self {
+            client,
+            backend,
+            feedback,
+        }
+    }
+
+    /// Everything `submit_feedback` stored, oldest first.
+    fn stored_feedback(&self) -> Vec<crate::feedback::FeedbackRecord> {
+        let mut items = self
+            .feedback
+            .store
+            .list(&FeedbackFilter {
+                include_dismissed: true,
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap()
+            .items;
+        items.reverse();
+        items
     }
 
     async fn call(&self, tool: &'static str, arguments: Value) -> CallToolResult {
@@ -442,7 +467,7 @@ async fn optional_arguments_have_a_single_type() {
                 "{}.{name}: {property}",
                 tool.name
             );
-            if name != "query" && name != "page" {
+            if !["query", "page", "feedback"].contains(&name.as_str()) {
                 assert!(!required.contains(&json!(name)), "{}.{name}", tool.name);
             }
         }
@@ -888,10 +913,120 @@ async fn format_is_a_plain_enum_argument() {
     let h = Harness::new().await;
     for tool in h.client.list_all_tools().await.unwrap() {
         let format = &tool.input_schema["properties"]["format"];
-        if tool.name == "get_page" {
+        if tool.name == "get_page" || tool.name == "submit_feedback" {
             assert!(format.is_null(), "{format}");
         } else {
             assert_eq!(format["enum"], json!(["markdown", "json"]), "{}", tool.name);
         }
+    }
+}
+
+#[tokio::test]
+async fn submit_feedback_records_feedback_on_the_canonical_page() {
+    let h = Harness::new().await;
+    let result = h
+        .call(
+            "submit_feedback",
+            json!({"page": "https://qdrant.tech/documentation/concepts/hybrid-queries/",
+                   "feedback": "  The RRF example uses a parameter removed in 1.15.  "}),
+        )
+        .await;
+    assert!(!is_error(&result), "{}", text(&result));
+    let reply = text(&result);
+    assert!(reply.contains("Hybrid Queries"), "{reply}");
+    let stored = h.stored_feedback();
+    assert_eq!(stored.len(), 1);
+    // Recorded at the page's current path, not the old one asked for.
+    assert_eq!(stored[0].page, "/documentation/search/hybrid-queries/");
+    assert_eq!(
+        stored[0].url,
+        format!("{SITE_URL}/documentation/search/hybrid-queries/")
+    );
+    assert_eq!(stored[0].title.as_deref(), Some("Hybrid Queries"));
+    assert_eq!(
+        stored[0].feedback,
+        "The RRF example uses a parameter removed in 1.15."
+    );
+    assert!(!stored[0].dismissed);
+    // The client named itself in initialize.
+    assert!(stored[0].client.is_some());
+}
+
+#[tokio::test]
+async fn submit_feedback_accepts_a_listed_page_without_markdown() {
+    let h = Harness::new().await;
+    let result = h
+        .call(
+            "submit_feedback",
+            json!({"page": "search/filtering", "feedback": "Missing nested filters."}),
+        )
+        .await;
+    assert!(!is_error(&result), "{}", text(&result));
+    assert_eq!(
+        h.stored_feedback()[0].page,
+        "/documentation/search/filtering/"
+    );
+}
+
+#[tokio::test]
+async fn submit_feedback_refuses_missing_pages_and_empty_feedback() {
+    let h = Harness::new().await;
+    let missing = h
+        .call(
+            "submit_feedback",
+            json!({"page": "/documentation/nope/", "feedback": "Wrong."}),
+        )
+        .await;
+    assert!(is_error(&missing));
+    assert!(text(&missing).contains("No page at /documentation/nope/"));
+
+    let empty = h
+        .call(
+            "submit_feedback",
+            json!({"page": "search/hybrid-queries", "feedback": "   "}),
+        )
+        .await;
+    assert!(is_error(&empty));
+    assert!(text(&empty).contains("empty"), "{}", text(&empty));
+
+    let long = h
+        .call(
+            "submit_feedback",
+            json!({"page": "search/hybrid-queries", "feedback": "x".repeat(5001)}),
+        )
+        .await;
+    assert!(is_error(&long));
+
+    let elsewhere = h
+        .call(
+            "submit_feedback",
+            json!({"page": "https://example.com/docs/", "feedback": "Wrong."}),
+        )
+        .await;
+    assert!(is_error(&elsewhere));
+    assert!(h.stored_feedback().is_empty());
+}
+
+#[tokio::test]
+async fn submit_feedback_is_not_read_only() {
+    let h = Harness::new().await;
+    let tools = h.client.list_all_tools().await.unwrap();
+    let tool = tools
+        .iter()
+        .find(|t| t.name == "submit_feedback")
+        .expect("submit_feedback is listed");
+    let annotations = tool.annotations.as_ref().unwrap();
+    assert_eq!(annotations.read_only_hint, Some(false));
+    assert_eq!(annotations.destructive_hint, Some(false));
+    let required = tool.input_schema["required"].as_array().unwrap();
+    assert!(required.contains(&json!("page")) && required.contains(&json!("feedback")));
+    // Every other tool stays read-only.
+    for other in tools.iter().filter(|t| t.name != "submit_feedback") {
+        assert_eq!(
+            other.annotations.as_ref().unwrap().read_only_hint,
+            Some(true),
+            "{}",
+            other.name
+        );
     }
 }

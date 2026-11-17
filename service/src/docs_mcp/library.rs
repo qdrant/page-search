@@ -328,6 +328,28 @@ impl Library {
         Ok((page, self.url(&path), strip_preamble(&body)))
     }
 
+    /// The canonical path and index entry of a page that exists here, found
+    /// at its path or an old one. A page the index doesn't list counts if its
+    /// Markdown can be read.
+    pub async fn find_page(&self, reference: &str) -> Result<(String, Option<DocPage>), PageError> {
+        let path = self.normalize(reference)?;
+        let page = self
+            .backend
+            .find_page(&page_key(&path))
+            .await
+            .map_err(|e| PageError::Other(format!("Could not look up the page: {e}")))?
+            .map(DocPage::from)
+            .filter(|page| self.sources.iter().any(|s| s == page.source()));
+        if let Some(page) = page {
+            return Ok((page.path.clone(), Some(page)));
+        }
+        match self.backend.page_markdown(&page_key(&path)).await {
+            Ok(Some(_)) => Ok((path, None)),
+            Ok(None) => Err(PageError::NotFound(path)),
+            Err(e) => Err(PageError::Other(format!("Could not look up the page: {e}"))),
+        }
+    }
+
     /// Top-level documentation sections, then each other source, with page counts.
     pub async fn list_sections(&self) -> Result<Vec<(DocPage, usize)>, String> {
         let index = self.page_index().await?;

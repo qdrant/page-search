@@ -15,6 +15,8 @@ use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
 use super::*;
 use crate::docs_mcp::config::Config;
 use crate::docs_mcp::{Backend, DocsServer, FixedBackend};
+use crate::feedback::tests::TempStore;
+use crate::pages::StoredPage;
 use crate::request_log::{self, ReplayToken};
 
 /// Where the service is reached from outside, unlike `Harness::base`.
@@ -25,6 +27,7 @@ struct Harness {
     google: MockServer,
     client: reqwest::Client,
     db: std::path::PathBuf,
+    _feedback: TempStore,
 }
 
 impl Drop for Harness {
@@ -71,6 +74,7 @@ impl Harness {
         config.validate().unwrap();
         let log = RequestLog::open(&db, 90).unwrap();
         let token = ReplayToken::random();
+        let feedback = TempStore::new();
         let panel = AdminPanel::new(
             config,
             log.clone(),
@@ -79,16 +83,27 @@ impl Harness {
                 mcp_host: "localhost".into(),
                 token: token.clone(),
             },
+            Some(feedback.store.clone()),
         );
         let log = web::Data::new(log);
         let token = web::Data::new(token);
-        // The real docs MCP server, with nothing to search, at /mcp/docs.
+        // The real docs MCP server, with one page and nothing to search,
+        // at /mcp/docs.
         let docs = DocsServer::new(
             Config {
                 sources: vec!["documentation".into()],
             },
-            Backend::Fixed(std::sync::Arc::new(FixedBackend::default())),
-        );
+            Backend::Fixed(std::sync::Arc::new({
+                let mut backend = FixedBackend::default();
+                backend.pages = vec![StoredPage {
+                    page: "documentation/filtering".into(),
+                    title: "Filtering".into(),
+                    meta: Default::default(),
+                }];
+                backend
+            })),
+        )
+        .with_feedback(feedback.store.clone());
         let server = HttpServer::new(move || {
             let docs = docs.clone();
             let mcp = StreamableHttpService::builder()
@@ -123,6 +138,7 @@ impl Harness {
             google,
             client,
             db,
+            _feedback: feedback,
         }
     }
 
@@ -567,5 +583,85 @@ async fn noise_and_protocol_requests_can_be_left_out() {
             .iter()
             .all(|t| t["query"] != "filters"),
         "{top}"
+    );
+}
+
+#[actix_web::test]
+async fn admins_see_and_dismiss_agent_feedback() {
+    let h = Harness::start().await;
+    let cookie = cookie_of(
+        &h.sign_in(json!({"email": "ann@qdrant.com", "email_verified": true, "hd": "qdrant.com"}))
+            .await,
+    );
+    let sent = h
+        .client
+        .post(format!("{}/mcp/docs", h.base))
+        .header("accept", "application/json, text/event-stream")
+        .header("user-agent", "agent-test/1.0")
+        .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "submit_feedback",
+                       "arguments": {"page": "/documentation/filtering/", "feedback": "The geo example is outdated."}}}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(sent["result"]["isError"], false, "{sent}");
+
+    let list = h.json("/admin/api/feedback", &cookie).await;
+    let item = &list["items"][0];
+    assert_eq!(item["page"], "/documentation/filtering/");
+    assert_eq!(item["title"], "Filtering");
+    assert_eq!(item["feedback"], "The geo example is outdated.");
+    assert_eq!(item["client"], "agent-test/1.0");
+    let pages = h.json("/admin/api/feedback/pages", &cookie).await;
+    assert_eq!(pages[0]["open"], 1);
+
+    let id = item["id"].as_i64().unwrap();
+    let dismiss = |body: Value, cookie: Option<&str>, json: bool| {
+        let mut request = h
+            .client
+            .post(format!("{}/admin/api/feedback/{id}/dismiss", h.base));
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        request = if json {
+            request.json(&body)
+        } else {
+            request
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body("dismissed=true")
+        };
+        request.send()
+    };
+    // Signed out, or as a cross-site form: refused.
+    assert_ne!(
+        dismiss(json!({"dismissed": true}), None, true)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_ne!(
+        dismiss(json!({}), Some(&cookie), false)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let done = dismiss(json!({"dismissed": true}), Some(&cookie), true)
+        .await
+        .unwrap();
+    assert_eq!(done.status(), StatusCode::OK);
+    assert_eq!(done.json::<Value>().await.unwrap()["dismissed"], true);
+
+    let open = h.json("/admin/api/feedback", &cookie).await;
+    assert_eq!(open["items"], json!([]));
+    let all = h.json("/admin/api/feedback?dismissed=true", &cookie).await;
+    assert_eq!(all["items"][0]["dismissed"], true);
+    assert_eq!(
+        h.json("/admin/api/feedback/pages", &cookie).await,
+        json!([])
     );
 }

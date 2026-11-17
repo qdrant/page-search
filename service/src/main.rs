@@ -2,12 +2,13 @@ use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 
 use actix_cors::Cors;
 use actix_web::{main, middleware, web::Data, App, HttpServer};
-use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
 use page_search::admin::{AdminConfig, AdminPanel, ReplayTarget};
 use page_search::docs_mcp::{config::Config, Backend, DocsServer};
 use page_search::embedding::QueryEncoder;
+use page_search::feedback::FeedbackStore;
 use page_search::request_log::{self, ReplayToken, RequestLog};
 use page_search::{search, sections, skills, snippets};
+use rmcp_actix_web::transport::{LocalSessionManager, StreamableHttpService};
 
 /// Hosts the docs MCP server answers by default: this service's public name,
 /// and loopback for local testing.
@@ -16,6 +17,8 @@ const DEFAULT_MCP_ALLOWED_HOSTS: &str = "search.qdrant.tech,localhost,127.0.0.1"
 /// container mounts a volume at `/service/data`.
 const DEFAULT_REQUEST_LOG_PATH: &str = "data/requests.sqlite";
 const DEFAULT_REQUEST_LOG_RETENTION_DAYS: u32 = 90;
+/// Where agents' feedback on pages is kept, next to the request log.
+const DEFAULT_FEEDBACK_PATH: &str = "data/feedback.sqlite";
 
 #[main]
 async fn main() -> std::io::Result<()> {
@@ -45,13 +48,28 @@ async fn main() -> std::io::Result<()> {
         "Docs MCP serving {:?} at /mcp for hosts {mcp_allowed_hosts:?}",
         docs_config.sources
     );
-    let docs_mcp = DocsServer::new(
+    let mut docs_mcp = DocsServer::new(
         docs_config,
         Backend::Qdrant {
             client: qdrant.clone(),
             encoder: encoder.clone(),
         },
     );
+
+    // Feedback from the submit_feedback tool. Without a store the tool
+    // refuses, and the rest of the service runs as usual.
+    let feedback_path = std::env::var("FEEDBACK_PATH").unwrap_or(DEFAULT_FEEDBACK_PATH.into());
+    let feedback = match FeedbackStore::open(&feedback_path) {
+        Ok(store) => {
+            log::info!("Keeping agent feedback in {feedback_path}");
+            docs_mcp = docs_mcp.with_feedback(store.clone());
+            Some(store)
+        }
+        Err(e) => {
+            log::error!("Not keeping agent feedback: can't open {feedback_path}: {e}");
+            None
+        }
+    };
 
     // The request log, and the admin panel that shows it. The service runs
     // without them rather than not at all.
@@ -91,7 +109,12 @@ async fn main() -> std::io::Result<()> {
                 token: replay_token.clone(),
             };
             log::info!("Admin panel at /admin for {}", config.public_url);
-            Some(AdminPanel::new(config, log.clone(), target))
+            Some(AdminPanel::new(
+                config,
+                log.clone(),
+                target,
+                feedback.clone(),
+            ))
         }
         (Err(reason), _) => {
             log::warn!("Admin panel is off: {reason}");

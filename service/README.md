@@ -50,7 +50,7 @@ documentation, articles, the blog, and courses. `search_docs` takes a
 `sources` argument to narrow the search to some of them, and
 `DOCS_MCP_SOURCES` decides which of them the server serves at all.
 
-It has four read-only tools:
+It has four read-only tools, and one that records feedback:
 
 | Tool | What it does |
 |---|---|
@@ -58,10 +58,20 @@ It has four read-only tools:
 | `search_snippets(query, language?, limit?, format?)` | Searches the `snippet-search` collection the same way as `/snippets/search`, with the language optional, and returns code examples with their descriptions and pages |
 | `get_page(page)` | Returns a page's Markdown, put together from its sections in the `sections` collection, resolving old URLs through the page index. For a missing page, suggests existing ones |
 | `list_docs(section?, offset?, limit?, format?)` | Browses the page index: docs and courses in sidebar order, articles and blog posts newest first |
+| `submit_feedback(page, feedback)` | Records an agent's report that a page is incorrect, outdated, confusing, or incomplete, for the admin panel's Feedback view. The page must exist, found the same way as for `get_page`; for a missing page it suggests existing ones and records nothing |
 
 Tools answer in Markdown by default. `format: "json"` returns the same result
 as JSON, in both the text and the structured content. `get_page` returns
-Markdown only. New tools should offer both formats where a JSON form makes sense.
+Markdown only, and `submit_feedback` a short confirmation. New tools should
+offer both formats where a JSON form makes sense.
+
+`submit_feedback` is modeled on [Mintlify's agent
+feedback](https://www.mintlify.com/docs/optimize/feedback). Feedback is
+stored at the page's current path, with its title, the text (up to 5,000
+characters), and the client's user agent. It goes to its own SQLite file,
+`data/feedback.sqlite` (`FEEDBACK_PATH`), which is never pruned: admins
+dismiss feedback once they've dealt with it. If the file can't be opened, the
+tool answers with an error and the rest of the server works as before.
 
 Everything comes from Qdrant; the server makes no requests to the site.
 `get_page` finds the page, or the page an old URL moved to, with a filtered
@@ -168,6 +178,10 @@ results, without Qdrant or network access.
 latencies, and the most frequent queries. Selecting a request runs it again
 and shows what the service returns for it now. Responses aren't stored.
 
+The Feedback view lists what agents sent with `submit_feedback`, newest
+first, and the pages with the most open feedback. Dismissing feedback hides
+it; "Show dismissed" brings it back.
+
 The search box searches as you type, so the most frequent queries leave out
 partial ones: a search is left out when a longer search starting with it
 follows within 10 seconds from the same user agent. The log has no IPs, so
@@ -197,6 +211,7 @@ of the service works as before.
 | `ADMIN_PUBLIC_URL` | `https://search.qdrant.tech` | Where the service is reached. The OAuth client needs `<ADMIN_PUBLIC_URL>/admin/auth/callback` as an authorized redirect URI |
 | `REQUEST_LOG_PATH` | `data/requests.sqlite` | |
 | `REQUEST_LOG_RETENTION_DAYS` | `90` | |
+| `FEEDBACK_PATH` | `data/feedback.sqlite` | Agent feedback, kept until deleted by hand |
 
 To try it locally, create an OAuth client with
 `http://localhost:8005/admin/auth/callback` as a redirect URI and set
