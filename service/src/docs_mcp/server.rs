@@ -1,4 +1,5 @@
-//! The MCP server: four read-only tools over the content published on qdrant.tech.
+//! The MCP server: four read-only tools over the content published on qdrant.tech,
+//! and `submit_feedback`, which records an agent's feedback on a page.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::config::Config;
 use super::library::{check_enabled, normalize_path, source_of, DocPage, Library, PageError};
 use crate::embedding::QueryEncoder;
+use crate::feedback::{FeedbackStore, NewFeedback};
 use crate::pages::{self, StoredPage};
 use crate::similar_paths::suggest;
 use crate::snippets::{normalize_language, Snippet};
@@ -53,6 +55,9 @@ them in full. Use list_docs to browse when search terms are unclear, and
 search_snippets to find code examples in a given language. Documentation
 pages usually show an example in one language; search_snippets has it in
 every client language. Cite the page URLs you relied on.
+
+If a page turns out to be wrong, outdated, confusing, or missing something
+you needed, report it with submit_feedback so the Qdrant team can fix it.
 ";
 
 /// A part of qdrant.tech that can be searched.
@@ -179,6 +184,18 @@ pub struct SearchArgs {
 pub struct GetPageArgs {
     /// The page to read: a qdrant.tech URL, its index.md URL, or a path such as /documentation/search/hybrid-queries/, /blog/qdrant-1.15.x/, or search/hybrid-queries (a path without a source is a documentation path).
     pub page: String,
+}
+
+/// Longest feedback accepted, in characters.
+const MAX_FEEDBACK: usize = 5000;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SubmitFeedbackArgs {
+    /// The page the feedback is about: a qdrant.tech URL or a path such as /documentation/search/hybrid-queries/, as for get_page.
+    pub page: String,
+    /// What is wrong or missing, specifically: the incorrect statement or example, what is outdated, what was confusing, or what you needed and didn't find. Say what would have been right if you know. Don't include personal data, secrets, or the user's private code.
+    #[schemars(length(min = 1, max = 5000))]
+    pub feedback: String,
 }
 
 fn default_list_limit() -> usize {
@@ -380,6 +397,8 @@ impl Backend {
 pub struct DocsServer {
     backend: Backend,
     library: Arc<Library>,
+    /// Where `submit_feedback` keeps feedback. Without it the tool refuses.
+    feedback: Option<FeedbackStore>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -389,8 +408,15 @@ impl DocsServer {
         Self {
             library: Arc::new(Library::new(config, backend.clone())),
             backend,
+            feedback: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Keeps the feedback of `submit_feedback` in `store`.
+    pub fn with_feedback(mut self, store: FeedbackStore) -> Self {
+        self.feedback = Some(store);
+        self
     }
 
     /// The names of the tools this server has, such as `search_docs`.
@@ -664,6 +690,85 @@ impl DocsServer {
         };
         respond(args.format, &list, pages_markdown)
     }
+
+    /// Report a problem with a page to the Qdrant team, so they can fix it.
+    ///
+    /// Use it when a page you read is incorrect, outdated, confusing, or incomplete: an example that fails, a parameter that no longer exists, a missing step, or an answer you needed and couldn't find on the page where it belongs. Not for questions, praise, or problems with your own code. Give the page and say specifically what is wrong and, if you know, what would be right. Each call records one piece of feedback; send it once per problem.
+    #[tool(annotations(
+        read_only_hint = false,
+        destructive_hint = false,
+        idempotent_hint = false,
+        open_world_hint = true
+    ))]
+    async fn submit_feedback(
+        &self,
+        Parameters(args): Parameters<SubmitFeedbackArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let text = args.feedback.trim();
+        if text.is_empty() {
+            return Err("The feedback is empty. Say what is wrong with the page.".to_string());
+        }
+        let length = text.chars().count();
+        if length > MAX_FEEDBACK {
+            return Err(format!(
+                "The feedback is {length} characters long; keep it under {MAX_FEEDBACK}."
+            ));
+        }
+        let Some(store) = self.feedback.clone() else {
+            return Err("Feedback can't be recorded right now.".to_string());
+        };
+        let (path, entry) = match self.library.find_page(&args.page).await {
+            Ok(page) => page,
+            Err(PageError::NotFound(path)) => return Err(self.not_found(&path).await),
+            Err(PageError::Other(message)) => return Err(message),
+        };
+        let url = self.library.url(&path);
+        let title = entry.map(|e| e.title).filter(|t| !t.is_empty());
+        let feedback = NewFeedback {
+            page: path,
+            url: url.clone(),
+            title: title.clone(),
+            feedback: text.to_string(),
+            client: client_of(&context),
+        };
+        tokio::task::spawn_blocking(move || store.add(&feedback))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()))
+            .map_err(|e| {
+                log::error!("Recording feedback failed: {e}");
+                "Feedback can't be recorded right now.".to_string()
+            })?;
+        let page = match title {
+            Some(title) => format!("{title} ({url})"),
+            None => url,
+        };
+        Ok(format!(
+            "Thank you. Your feedback on {page} was recorded for the Qdrant team."
+        ))
+    }
+}
+
+/// The MCP client calling: the HTTP request's user agent, or else the name
+/// and version it gave in `initialize`. Over stateless HTTP there is no
+/// `initialize` for the call, and the peer info is a placeholder.
+fn client_of(context: &RequestContext<RoleServer>) -> Option<String> {
+    use rmcp_actix_web::transport::http::{header::USER_AGENT, request::Parts};
+    let from_header = context
+        .extensions
+        .get::<Parts>()
+        .and_then(|parts| parts.headers.get(USER_AGENT)?.to_str().ok())
+        .map(str::to_string);
+    let from_initialize = || {
+        context.peer.peer_info().map(|info| {
+            let client = &info.client_info;
+            format!("{}/{}", client.name, client.version)
+        })
+    };
+    from_header
+        .or_else(from_initialize)
+        .map(|c| c.chars().take(200).collect())
 }
 
 /// Collapse a passage onto one line, to keep it inside a list item.

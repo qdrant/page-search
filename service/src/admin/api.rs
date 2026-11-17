@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use actix_web::web::{self, Data, Path, Query};
-use actix_web::{get, HttpResponse};
+use actix_web::{get, post, HttpResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -11,6 +11,7 @@ use super::auth::Admin;
 use super::config::AdminConfig;
 use qdrant_client::Qdrant;
 
+use crate::feedback::{FeedbackFilter, FeedbackStore};
 use crate::request_log::queries::TrafficFilter;
 use crate::request_log::snippet_queries::{self, SnippetFilter, Sort, SortBy, Source};
 use crate::request_log::{now_ms, queries, ReplayToken, RequestFilter, RequestLog, REPLAY_HEADER};
@@ -412,4 +413,91 @@ pub async fn snippet_search(
         duration_ms: start.elapsed().as_secs_f64() * 1000.0,
         breakdown,
     }))
+}
+
+// ---- Agent feedback ----
+
+fn feedback_or_unavailable(
+    store: Option<Data<FeedbackStore>>,
+) -> actix_web::Result<Data<FeedbackStore>> {
+    store.ok_or_else(|| actix_web::error::ErrorServiceUnavailable("Feedback is not kept"))
+}
+
+/// Runs a feedback store call off the async workers.
+async fn on_store<T: Send + 'static>(
+    store: Data<FeedbackStore>,
+    call: impl FnOnce(&FeedbackStore) -> rusqlite::Result<T> + Send + 'static,
+) -> actix_web::Result<T> {
+    web::block(move || call(&store)).await?.map_err(|e| {
+        log::error!("Feedback store query failed: {e}");
+        actix_web::error::ErrorInternalServerError("Feedback store query failed")
+    })
+}
+
+#[derive(Deserialize)]
+pub struct FeedbackQuery {
+    #[serde(default)]
+    dismissed: bool,
+    contains: Option<String>,
+    before: Option<i64>,
+}
+
+/// Feedback newest first; dismissed feedback only with `dismissed=true`.
+#[get("/api/feedback")]
+pub async fn feedback_list(
+    _: Admin,
+    store: Option<Data<FeedbackStore>>,
+    q: Query<FeedbackQuery>,
+) -> actix_web::Result<HttpResponse> {
+    let store = feedback_or_unavailable(store)?;
+    let q = q.into_inner();
+    let filter = FeedbackFilter {
+        include_dismissed: q.dismissed,
+        contains: q.contains.filter(|c| !c.trim().is_empty()),
+        before_id: q.before,
+        limit: 50,
+    };
+    let list = on_store(store, move |s| s.list(&filter)).await?;
+    Ok(HttpResponse::Ok().json(list))
+}
+
+/// Pages with the most open feedback.
+#[get("/api/feedback/pages")]
+pub async fn feedback_pages(
+    _: Admin,
+    store: Option<Data<FeedbackStore>>,
+) -> actix_web::Result<HttpResponse> {
+    let store = feedback_or_unavailable(store)?;
+    let pages = on_store(store, |s| s.pages(50)).await?;
+    Ok(HttpResponse::Ok().json(pages))
+}
+
+#[derive(Deserialize)]
+pub struct Dismiss {
+    dismissed: bool,
+}
+
+/// Dismisses feedback, or brings it back. Takes a JSON body, which a
+/// cross-site form can't send.
+#[post("/api/feedback/{id}/dismiss")]
+pub async fn feedback_dismiss(
+    _: Admin,
+    store: Option<Data<FeedbackStore>>,
+    id: Path<i64>,
+    body: web::Json<Dismiss>,
+) -> actix_web::Result<HttpResponse> {
+    let store = feedback_or_unavailable(store)?;
+    let (id, dismissed) = (id.into_inner(), body.dismissed);
+    let record = on_store(store, move |s| {
+        Ok(if s.set_dismissed(id, dismissed)? {
+            s.get(id)?
+        } else {
+            None
+        })
+    })
+    .await?;
+    match record {
+        Some(record) => Ok(HttpResponse::Ok().json(record)),
+        None => Ok(HttpResponse::NotFound().finish()),
+    }
 }

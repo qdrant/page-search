@@ -250,6 +250,10 @@ th .sort::after { content: "↕"; opacity: .35; font-size: 11px; }
 th[aria-sort="ascending"] .sort, th[aria-sort="descending"] .sort { color: var(--ink); font-weight: 600; }
 th[aria-sort="ascending"] .sort::after { content: "↑"; opacity: 1; }
 th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
+.fb-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 24ch; }
+.fb-page a { color: inherit; }
+.fb-page .path { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+tr.dismissed td { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -258,6 +262,7 @@ th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
   <nav class="tabs" role="tablist" aria-label="Views">
     <button role="tab" id="tab-traffic" data-view="traffic" aria-selected="true">Traffic</button>
     <button role="tab" id="tab-snippets" data-view="snippets" aria-selected="false">Snippets</button>
+    <button role="tab" id="tab-feedback" data-view="feedback" aria-selected="false">Feedback <span class="badge warn" id="fb-tab-badge" hidden></span></button>
   </nav>
   <span class="who" id="who"></span>
   <form method="post" action="/admin/logout"><button type="submit">Sign Out</button></form>
@@ -437,6 +442,30 @@ th[aria-sort="descending"] .sort::after { content: "↓"; opacity: 1; }
       </section>
     </section>
   </div>
+  <div id="view-feedback" style="display:none;gap:16px">
+    <div class="toolbar">
+      <label title="Feedback an admin has dismissed as dealt with"><input type="checkbox" id="fb-dismissed"> Show dismissed</label>
+      <input id="fb-search" type="search" placeholder="Filter pages and feedback" aria-label="Filter Feedback" size="24">
+      <span class="note">What AI agents reported with the MCP server's submit_feedback tool. Feedback is kept until dismissed.</span>
+    </div>
+    <div class="two wide-left">
+      <section class="card">
+        <h2>Feedback</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Time</th><th>Page</th><th>Feedback</th><th></th></tr></thead>
+          <tbody id="fb-list"></tbody>
+        </table></div>
+        <button class="more" id="fb-more" hidden>Load More</button>
+      </section>
+      <section class="card">
+        <h2>Pages with Open Feedback</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Page</th><th class="num">Open</th></tr></thead>
+          <tbody id="fb-pages"></tbody>
+        </table></div>
+      </section>
+    </div>
+  </div>
 </main>
 
 <dialog id="detail" aria-labelledby="detail-title">
@@ -478,8 +507,8 @@ function el(tag, attrs = {}, ...children) {
   return e;
 }
 
-async function api(path) {
-  const res = await fetch(path, { credentials: "same-origin" });
+async function api(path, init = {}) {
+  const res = await fetch(path, { credentials: "same-origin", ...init });
   if (res.status === 401) { location.href = "/admin/login"; throw new Error("signed out"); }
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
@@ -761,17 +790,19 @@ const SUBS = ["coverage", "searches", "debugger"];
 // `#snippets` or `#snippets/<sub>` opens the Snippets view.
 function readHash() {
   const [view, sub] = location.hash.slice(1).split("/");
-  state.view = view === "snippets" ? "snippets" : "traffic";
+  state.view = ["snippets", "feedback"].includes(view) ? view : "traffic";
   if (SUBS.includes(sub)) state.sub = sub;
 }
 function writeHash() {
-  const hash = state.view === "snippets" ? (state.sub === "coverage" ? "#snippets" : `#snippets/${state.sub}`) : "";
+  const hash = state.view === "snippets" ? (state.sub === "coverage" ? "#snippets" : `#snippets/${state.sub}`)
+    : state.view === "feedback" ? "#feedback" : "";
   history.replaceState(null, "", hash || location.pathname);
 }
 function showView() {
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.view === state.view));
   $("view-traffic").style.display = state.view === "traffic" ? "grid" : "none";
   $("view-snippets").style.display = state.view === "snippets" ? "grid" : "none";
+  $("view-feedback").style.display = state.view === "feedback" ? "grid" : "none";
   for (const b of document.querySelectorAll(".subtabs button")) b.setAttribute("aria-selected", String(b.dataset.sub === state.sub));
   for (const g of document.querySelectorAll("#view-snippets .group")) g.hidden = g.dataset.sub !== state.sub;
   // A chart drawn while hidden has no width.
@@ -1220,6 +1251,69 @@ $("detail-debug").addEventListener("click", () => {
 });
 
 // ---- Wiring ----
+// ---- Feedback ----
+const fb = { before: null };
+function refreshFeedback() { fb.before = null; $("fb-list").replaceChildren(); return Promise.all([loadFeedback(), loadFeedbackPages()]); }
+async function loadFeedback() {
+  const params = new URLSearchParams();
+  if ($("fb-dismissed").checked) params.set("dismissed", "true");
+  const contains = $("fb-search").value.trim();
+  if (contains) params.set("contains", contains);
+  if (fb.before) params.set("before", fb.before);
+  let list;
+  try { list = await api(`/admin/api/feedback?${params}`); }
+  catch (e) {
+    $("fb-list").replaceChildren(el("tr", {}, el("td", { colspan: 4, class: "empty" }, `Feedback is unavailable: ${e.message}`)));
+    $("fb-more").hidden = true;
+    return;
+  }
+  const tbody = $("fb-list");
+  if (!list.items.length && !fb.before) tbody.append(el("tr", {}, el("td", { colspan: 4, class: "empty" }, "No feedback matches.")));
+  for (const r of list.items) tbody.append(feedbackRow(r));
+  fb.before = list.next_before;
+  $("fb-more").hidden = !list.next_before;
+}
+function feedbackRow(r) {
+  const button = el("button", { onclick: () => dismiss(r, row) }, r.dismissed ? "Restore" : "Dismiss");
+  const row = el("tr", { class: r.dismissed ? "dismissed" : null },
+    el("td", { class: "time", title: `${new Date(r.ts).toISOString()}${r.client ? `\n${r.client}` : ""}` },
+      new Date(r.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })),
+    el("td", { class: "fb-page" }, el("a", { href: r.url, target: "_blank", rel: "noopener" }, r.title || r.page), el("span", { class: "path" }, r.page)),
+    el("td", { class: "fb-text" }, r.feedback),
+    el("td", {}, button));
+  return row;
+}
+async function dismiss(r, row) {
+  try {
+    const updated = await api(`/admin/api/feedback/${r.id}/dismiss`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dismissed: !r.dismissed }),
+    });
+    if (updated.dismissed && !$("fb-dismissed").checked) row.remove();
+    else row.replaceWith(feedbackRow(updated));
+    loadFeedbackPages();
+  } catch (e) { alert(`Couldn't update the feedback: ${e.message}`); }
+}
+async function loadFeedbackPages() {
+  let pages;
+  try { pages = await api("/admin/api/feedback/pages"); } catch { pages = []; }
+  const open = pages.reduce((n, p) => n + p.open, 0);
+  $("fb-tab-badge").hidden = !open;
+  $("fb-tab-badge").textContent = fmt.format(open);
+  const tbody = $("fb-pages");
+  tbody.replaceChildren();
+  if (!pages.length) tbody.append(el("tr", {}, el("td", { colspan: 2, class: "empty" }, "No open feedback.")));
+  for (const p of pages) {
+    const pick = () => { $("fb-search").value = p.page; refreshFeedback(); };
+    tbody.append(el("tr", { class: "click", tabindex: 0, onclick: pick, onkeydown: (ev) => ev.key === "Enter" && pick() },
+      el("td", { class: "fb-page" }, p.title || p.page, el("span", { class: "path" }, p.page)),
+      el("td", { class: "num" }, fmt.format(p.open))));
+  }
+}
+$("fb-dismissed").addEventListener("change", refreshFeedback);
+let fbTimer;
+$("fb-search").addEventListener("input", () => { clearTimeout(fbTimer); fbTimer = setTimeout(refreshFeedback, 300); });
+$("fb-more").addEventListener("click", loadFeedback);
+
 function setDays(days) {
   state.days = days;
   try { localStorage.setItem("admin-days", String(days)); } catch {}
@@ -1229,6 +1323,7 @@ function setDays(days) {
 async function refresh() {
   try {
     if (state.view === "snippets") await refreshSnippets();
+    else if (state.view === "feedback") await refreshFeedback();
     else {
       await loadStats();
       resetRequests();
@@ -1272,6 +1367,8 @@ window.addEventListener("hashchange", () => {
 readHash();
 showView();
 setDays(state.days);
+// The open count on the tab, whatever the view.
+if (state.view !== "feedback") loadFeedbackPages();
 </script>
 </body>
 </html>

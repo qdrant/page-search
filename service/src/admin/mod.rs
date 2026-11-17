@@ -3,6 +3,8 @@
 //! Its snippet view reports on snippet searches and runs them with each half
 //! of the hybrid search shown on its own, with the Qdrant client the app
 //! shares, if there is one.
+//! Its feedback view lists what agents reported with the docs MCP server's
+//! `submit_feedback` tool, for admins to dismiss once dealt with.
 //! Google accounts on the allow lists sign in with OAuth.
 
 mod api;
@@ -19,6 +21,7 @@ use actix_web::{HttpRequest, HttpResponse};
 pub use api::ReplayTarget;
 pub use config::AdminConfig;
 
+use crate::feedback::FeedbackStore;
 use crate::request_log::RequestLog;
 
 const PAGE: &str = include_str!("page.html");
@@ -31,10 +34,17 @@ pub struct AdminPanel {
     log: Data<RequestLog>,
     target: Data<ReplayTarget>,
     http: Data<reqwest::Client>,
+    /// `None` when feedback isn't kept: the feedback API answers 503.
+    feedback: Option<Data<FeedbackStore>>,
 }
 
 impl AdminPanel {
-    pub fn new(config: AdminConfig, log: RequestLog, target: ReplayTarget) -> Self {
+    pub fn new(
+        config: AdminConfig,
+        log: RequestLog,
+        target: ReplayTarget,
+        feedback: Option<FeedbackStore>,
+    ) -> Self {
         let key = Key::derive_from(config.session_key.as_bytes());
         Self {
             config: Data::new(config),
@@ -42,6 +52,7 @@ impl AdminPanel {
             log: Data::new(log),
             target: Data::new(target),
             http: Data::new(reqwest::Client::new()),
+            feedback: feedback.map(Data::new),
         }
     }
 
@@ -60,8 +71,12 @@ impl AdminPanel {
                     .session_ttl(time::Duration::hours(auth::SESSION_HOURS)),
             )
             .build();
+        let mut scope = web::scope("/admin");
+        if let Some(feedback) = &self.feedback {
+            scope = scope.app_data(feedback.clone());
+        }
         cfg.service(
-            web::scope("/admin")
+            scope
                 .wrap(session)
                 .app_data(self.config.clone())
                 .app_data(self.log.clone())
@@ -82,7 +97,10 @@ impl AdminPanel {
                 .service(api::snippet_top)
                 .service(api::snippet_requests)
                 .service(api::snippet_index)
-                .service(api::snippet_search),
+                .service(api::snippet_search)
+                .service(api::feedback_list)
+                .service(api::feedback_pages)
+                .service(api::feedback_dismiss),
         );
     }
 
