@@ -5,7 +5,7 @@ use qdrant_client::Payload;
 use regex::Regex;
 use serde::Deserialize;
 
-use super::links::rewrite_links;
+use super::links::{rebase_service_links, rewrite_links};
 
 pub fn slugify_heading(title: &str) -> String {
     let s = title.to_lowercase();
@@ -91,6 +91,7 @@ impl SectionSearchResult {
             .map(|s| rewrite_links(&s.content))
             .collect::<Vec<_>>()
             .join("\n");
+        let sections_text = rebase_service_links(&sections_text, base_url);
 
         let mut result = format!("Read one level up: {}\n\n{}", up_url, sections_text);
 

@@ -1,4 +1,21 @@
+use std::sync::LazyLock;
+
 use regex::{Captures, Regex};
+
+/// The address the indexed pages write into their text, as in
+/// "Search the documentation at https://search.qdrant.tech/md/...".
+static INDEXED_BASE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://search\.qdrant\.tech([^A-Za-z0-9.\-:@]|$)").unwrap()
+});
+
+/// Point links to `https://search.qdrant.tech` in `content` at `base_url`,
+/// the address this page was requested from (`{scheme}://{host}`), so a page
+/// read through another host links back to that host.
+pub fn rebase_service_links(content: &str, base_url: &str) -> String {
+    INDEXED_BASE
+        .replace_all(content, |caps: &Captures| format!("{base_url}{}", &caps[1]))
+        .into_owned()
+}
 
 /// Rewrite markdown links in `content` for the `/md/` service.
 ///
@@ -272,5 +289,47 @@ mod tests {
             transform_link("intro/index.md#setup"),
             "intro?s=setup"
         );
+    }
+
+    // ── rebase_service_links ────────────────────────────────────────
+
+    const SKILLS: &str = "https://skills.qdrant.tech";
+
+    #[test]
+    fn rebase_plain_and_markdown_links() {
+        let md = "> Search at https://search.qdrant.tech/md/documentation?q=x\n\
+                  [Filter](https://search.qdrant.tech/md/documentation/search/filtering)";
+        assert_eq!(
+            rebase_service_links(md, SKILLS),
+            "> Search at https://skills.qdrant.tech/md/documentation?q=x\n\
+             [Filter](https://skills.qdrant.tech/md/documentation/search/filtering)"
+        );
+    }
+
+    #[test]
+    fn rebase_bare_host() {
+        assert_eq!(
+            rebase_service_links("see https://search.qdrant.tech", SKILLS),
+            "see https://skills.qdrant.tech"
+        );
+        assert_eq!(
+            rebase_service_links("(https://search.qdrant.tech)", SKILLS),
+            "(https://skills.qdrant.tech)"
+        );
+    }
+
+    #[test]
+    fn rebase_leaves_other_hosts() {
+        let md = "https://qdrant.tech/documentation/ \
+                  https://skills.qdrant.tech/ \
+                  https://search.qdrant.technology/ \
+                  https://search.qdrant.tech.example.com/";
+        assert_eq!(rebase_service_links(md, "http://localhost:8005"), md);
+    }
+
+    #[test]
+    fn rebase_same_host_is_unchanged() {
+        let md = "[a](https://search.qdrant.tech/md/a) https://search.qdrant.tech/md/b";
+        assert_eq!(rebase_service_links(md, "https://search.qdrant.tech"), md);
     }
 }
