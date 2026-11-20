@@ -123,7 +123,7 @@ mod tests {
                           > Search the documentation at https://search.qdrant.tech/md/documentation?q=your+query+here\n\
                           > Use this file for an index of the main pages: https://qdrant.tech/llms.txt\n\n\
                           # Bulk Upload\n\n\
-                          [Upsert points in batches](/documentation/manage-data/points/#upload-points)."
+                          [Upsert points in batches](https://qdrant.tech/documentation/manage-data/points/index.md#upload-points)."
                     .into(),
                 url: "documentation/manage-data/bulk-upload".into(),
                 page: "documentation/manage-data/bulk-upload".into(),
@@ -151,7 +151,7 @@ mod tests {
                      > Search the documentation at {base}/md/documentation?q=your+query+here\n\
                      > Use this file for an index of the main pages: https://qdrant.tech/llms.txt\n\n\
                      # Bulk Upload\n\n\
-                     [Upsert points in batches](/md/documentation/manage-data/points?s=upload-points)."
+                     [Upsert points in batches]({base}/md/documentation/manage-data/points?s=upload-points)."
                 )
             );
         }
