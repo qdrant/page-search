@@ -5,7 +5,7 @@ use qdrant_client::Payload;
 use regex::Regex;
 use serde::Deserialize;
 
-use super::links::rewrite_links;
+use super::links::{rebase_service_links, rewrite_links};
 
 pub fn slugify_heading(title: &str) -> String {
     let s = title.to_lowercase();
@@ -91,6 +91,7 @@ impl SectionSearchResult {
             .map(|s| rewrite_links(&s.content))
             .collect::<Vec<_>>()
             .join("\n");
+        let sections_text = rebase_service_links(&sections_text, base_url);
 
         let mut result = format!("Read one level up: {}\n\n{}", up_url, sections_text);
 
@@ -106,5 +107,53 @@ impl SectionSearchResult {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bulk_upload_page() -> SectionSearchResult {
+        SectionSearchResult {
+            sections: vec![Section {
+                title: "Bulk Upload".into(),
+                slug: "bulk-upload".into(),
+                content: "> Explore Qdrant's agent skills catalog at https://skills.qdrant.tech/\n\
+                          > Search the documentation at https://search.qdrant.tech/md/documentation?q=your+query+here\n\
+                          > Use this file for an index of the main pages: https://qdrant.tech/llms.txt\n\n\
+                          # Bulk Upload\n\n\
+                          [Upsert points in batches](/documentation/manage-data/points/#upload-points)."
+                    .into(),
+                url: "documentation/manage-data/bulk-upload".into(),
+                page: "documentation/manage-data/bulk-upload".into(),
+                parent_sections: vec!["bulk-upload".into()],
+                parent_pages: vec![],
+                level: 1,
+                line: 0,
+            }],
+            sublinks: None,
+        }
+    }
+
+    #[test]
+    fn page_links_use_the_requested_host() {
+        for base in ["https://search.qdrant.tech", "https://skills.qdrant.tech"] {
+            assert_eq!(
+                bulk_upload_page().to_markdown(
+                    "/md/documentation/manage-data/bulk-upload",
+                    None,
+                    base
+                ),
+                format!(
+                    "Read one level up: {base}/md/documentation/manage-data\n\n\
+                     > Explore Qdrant's agent skills catalog at https://skills.qdrant.tech/\n\
+                     > Search the documentation at {base}/md/documentation?q=your+query+here\n\
+                     > Use this file for an index of the main pages: https://qdrant.tech/llms.txt\n\n\
+                     # Bulk Upload\n\n\
+                     [Upsert points in batches](/md/documentation/manage-data/points?s=upload-points)."
+                )
+            );
+        }
     }
 }
