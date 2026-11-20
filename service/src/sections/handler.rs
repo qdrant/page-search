@@ -378,6 +378,16 @@ struct MdSearch {
     limit: Option<u64>,
 }
 
+/// The address the page was requested from, `{scheme}://{host}`, which the
+/// page's links start with. A proxy in front of the service, such as the one
+/// serving skills.qdrant.tech, names the original address in a `Forwarded`
+/// header, which takes precedence over `Host`.
+fn request_base_url(req: &HttpRequest) -> String {
+    // The connection info must not be held across an await.
+    let conn = req.connection_info();
+    format!("{}://{}", conn.scheme(), conn.host())
+}
+
 #[get("/md/{path:.*}")]
 pub async fn md_handler(
     path: actix_web::web::Path<String>,
@@ -399,11 +409,7 @@ pub async fn md_handler(
     )
     .await;
 
-    // The connection info must not be held across an await.
-    let base_url = {
-        let conn = req.connection_info();
-        format!("{}://{}", conn.scheme(), conn.host())
-    };
+    let base_url = request_base_url(&req);
     let request_path = req.uri().path();
 
     match result {
@@ -439,8 +445,58 @@ pub async fn md_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actix_web::test::TestRequest;
 
     const BASE: &str = "https://search.qdrant.tech";
+    const SKILLS: &str = "https://skills.qdrant.tech";
+
+    /// A request as Caddy passes it on: always for search.qdrant.tech, and
+    /// with a `Forwarded` header when it came through skills.qdrant.tech.
+    fn proxied_request(forwarded: Option<&str>) -> HttpRequest {
+        let mut req = TestRequest::get()
+            .uri("/md/documentation/tutorials-develop/bulk-upload/")
+            .insert_header(("Host", "search.qdrant.tech"))
+            .insert_header(("X-Forwarded-Proto", "https"));
+        if let Some(value) = forwarded {
+            req = req.insert_header(("Forwarded", value));
+        }
+        req.to_http_request()
+    }
+
+    #[test]
+    fn base_url_is_the_requested_host() {
+        assert_eq!(request_base_url(&proxied_request(None)), BASE);
+    }
+
+    #[test]
+    fn base_url_follows_forwarded_host() {
+        let req = proxied_request(Some("host=skills.qdrant.tech;proto=https"));
+        assert_eq!(request_base_url(&req), SKILLS);
+    }
+
+    #[test]
+    fn not_found_links_use_each_host() {
+        let suggestions = Suggestions::Pages(vec![
+            suggestion("documentation/manage-data/bulk-upload", "Bulk Upload"),
+            suggestion("documentation/tutorials-develop", "Develop & Implement"),
+        ]);
+        let request = "/md/documentation/tutorials-develop/bulk-upload/";
+        for (forwarded, base) in [
+            (None, BASE),
+            (Some("host=skills.qdrant.tech;proto=https"), SKILLS),
+        ] {
+            let base_url = request_base_url(&proxied_request(forwarded));
+            assert_eq!(
+                not_found_markdown(request, &base_url, &suggestions),
+                format!(
+                    "Page or section not found: {request}\n\n\
+                     These existing pages may be the one you meant:\n\n\
+                     - [Bulk Upload]({base}/md/documentation/manage-data/bulk-upload)\n\
+                     - [Develop & Implement]({base}/md/documentation/tutorials-develop)\n"
+                )
+            );
+        }
+    }
 
     fn suggestion(page: &str, title: &str) -> Suggestion {
         Suggestion {
