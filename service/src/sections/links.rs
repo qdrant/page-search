@@ -22,16 +22,24 @@ pub fn rebase_service_links(content: &str, base_url: &str) -> String {
 /// 1. Strip `index.md` from the link path
 /// 2. Convert `#fragment` into `?s=fragment`
 /// 3. Add `/md` prefix only for absolute paths (starting with `/`)
-/// 4. Point links to qdrant.tech pages at the same page under
+/// 4. Point images and PDFs on absolute paths (`/docs/x.png`) at
+///    `https://qdrant.tech`, the only host that serves them
+/// 5. Point links to qdrant.tech pages at the same page under
 ///    `https://search.qdrant.tech/md/`, which [`rebase_service_links`] then
 ///    points at the requested host
-/// 5. Leave relative links relative; leave other external links unchanged
+/// 6. Leave relative links relative; leave other external links unchanged
 pub fn rewrite_links(content: &str) -> String {
-    let re = Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").unwrap();
+    // The link text may hold an image, as in `[![alt](/x.png)](/page)`.
+    let re = Regex::new(r"(!?)\[((?:[^\[\]]|!\[[^\[\]]*\]\([^)]*\))*)\]\(([^)]+)\)").unwrap();
 
     re.replace_all(content, |caps: &Captures| {
-        let text = &caps[1];
-        let raw = caps[2].trim();
+        let bang = &caps[1];
+        let text = if caps[2].contains("](") {
+            rewrite_links(&caps[2])
+        } else {
+            caps[2].to_string()
+        };
+        let raw = caps[3].trim();
 
         // Separate an optional markdown title: [txt](url "title")
         let (url, title) = match raw.find(" \"") {
@@ -42,15 +50,15 @@ pub fn rewrite_links(content: &str) -> String {
         let new_url = transform_link(url);
 
         match title {
-            Some(t) => format!("[{}]({}{})", text, new_url, t),
-            None => format!("[{}]({})", text, new_url),
+            Some(t) => format!("{}[{}]({}{})", bang, text, new_url, t),
+            None => format!("{}[{}]({})", bang, text, new_url),
         }
     })
     .to_string()
 }
 
 fn is_external(url: &str) -> bool {
-    url.contains("://") || url.starts_with("mailto:")
+    url.contains("://") || url.starts_with("//") || url.starts_with("mailto:")
 }
 
 /// The site the indexed pages come from.
@@ -84,12 +92,41 @@ fn docs_page_link(link: &str) -> Option<&str> {
     Some(rest)
 }
 
+/// File extensions of the images and documents that only qdrant.tech serves.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "bmp", "pdf",
+];
+
+/// Whether the root-relative `link` points at an image or PDF, such as
+/// `/docs/hybrid-fusion.svg`. This goes by the file extension, not by the
+/// `!` of `![alt](src)`: text such as `Try it![Docs](/documentation/)`
+/// has a `!` before a page link.
+fn is_docs_image(link: &str) -> bool {
+    if !link.starts_with('/') || link.starts_with("//") {
+        return false;
+    }
+    let path = link.split(['#', '?']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("");
+    match last.rsplit_once('.') {
+        Some((name, ext)) => {
+            !name.is_empty()
+                && IMAGE_EXTENSIONS
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(ext))
+        }
+        None => false,
+    }
+}
+
 fn transform_link(link: &str) -> String {
     if let Some(rest) = docs_page_link(link) {
         return format!("{SERVICE_SITE}{}", transform_link(rest));
     }
     if is_external(link) {
         return link.to_string();
+    }
+    if is_docs_image(link) {
+        return format!("{DOCS_SITE}{link}");
     }
 
     let (path_part, fragment) = match link.split_once('#') {
@@ -374,6 +411,89 @@ mod tests {
         assert_eq!(
             rebase_service_links(&md, "https://skills.qdrant.tech"),
             "[a](https://skills.qdrant.tech/md/documentation/manage-data/points?s=upload-points)"
+        );
+    }
+
+    // ── images and files stay on qdrant.tech ────────────────────────
+
+    #[test]
+    fn image_absolute_path_points_at_docs_site() {
+        assert_eq!(
+            rewrite_links("![Diagram](/docs/gettingstarted/x.png)"),
+            "![Diagram](https://qdrant.tech/docs/gettingstarted/x.png)"
+        );
+        assert_eq!(
+            rewrite_links("![Diagram](/documentation/img/x.svg \"title\")"),
+            "![Diagram](https://qdrant.tech/documentation/img/x.svg \"title\")"
+        );
+    }
+
+    #[test]
+    fn hybrid_queries_fusion_image() {
+        let md = rewrite_links(
+            "![Dense and sparse results for documents A to F, fused into a single list. \
+             With RRF, document A ranks first.](/docs/hybrid-fusion.svg)",
+        );
+        assert_eq!(
+            rebase_service_links(&md, SKILLS),
+            "![Dense and sparse results for documents A to F, fused into a single list. \
+             With RRF, document A ranks first.](https://qdrant.tech/docs/hybrid-fusion.svg)"
+        );
+    }
+
+    #[test]
+    fn image_other_sources_unchanged() {
+        let md = "![a](https://qdrant.tech/docs/x.png) ![b](https://example.com/y.png) \
+                  ![c](img/z.png) ![d](//cdn.example.com/w.png)";
+        assert_eq!(rewrite_links(md), md);
+    }
+
+    #[test]
+    fn image_not_rebased_to_requested_host() {
+        let md = rewrite_links("![a](/docs/x.png) ![b](https://qdrant.tech/docs/y.png)");
+        assert_eq!(
+            rebase_service_links(&md, SKILLS),
+            "![a](https://qdrant.tech/docs/x.png) ![b](https://qdrant.tech/docs/y.png)"
+        );
+    }
+
+    #[test]
+    fn linked_image_keeps_page_link() {
+        assert_eq!(
+            rewrite_links("[![a](/docs/x.png)](/documentation/foo/)"),
+            "[![a](https://qdrant.tech/docs/x.png)](/md/documentation/foo)"
+        );
+    }
+
+    #[test]
+    fn plain_link_to_image_points_at_docs_site() {
+        assert_eq!(
+            rewrite_links("[full size](/docs/x.PNG#top)"),
+            "[full size](https://qdrant.tech/docs/x.PNG#top)"
+        );
+    }
+
+    #[test]
+    fn pdf_link_points_at_docs_site() {
+        assert_eq!(
+            rewrite_links("[paper](/files/a.pdf#page=2)"),
+            "[paper](https://qdrant.tech/files/a.pdf#page=2)"
+        );
+    }
+
+    #[test]
+    fn bang_before_page_link_is_not_an_image() {
+        assert_eq!(
+            rewrite_links("Try it![Docs](/documentation/foo/)"),
+            "Try it![Docs](/md/documentation/foo)"
+        );
+    }
+
+    #[test]
+    fn non_image_paths_are_pages() {
+        assert_eq!(
+            rewrite_links("[v](/documentation/v1.2) [txt](/files/a.txt) ![x](/docs/diagram)"),
+            "[v](/md/documentation/v1.2) [txt](/md/files/a.txt) ![x](/md/docs/diagram)"
         );
     }
 
